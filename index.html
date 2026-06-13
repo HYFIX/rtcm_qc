@@ -1078,6 +1078,90 @@ function ecef2llh(xyz) {
 function parseRTCM(arrayBuffer, isEph = false) {
     const bytes = new Uint8Array(arrayBuffer);
     const N = bytes.length;
+    
+    // Auto-detect GEODNET format containing signature "$GEOD," in the first 100 bytes
+    let isGeodnet = false;
+    const checkLen = Math.min(N, 100);
+    for (let i = 0; i < checkLen - 5; i++) {
+        if (bytes[i] === 0x24 && bytes[i+1] === 0x47 && bytes[i+2] === 0x45 && bytes[i+3] === 0x4F && bytes[i+4] === 0x44 && bytes[i+5] === 0x2C) {
+            isGeodnet = true;
+            break;
+        }
+    }
+    
+    if (isGeodnet) {
+        let approxDateSet = false;
+        const packetBuffers = [];
+        let totalRawLength = 0;
+        
+        let idx = 0;
+        const decoder = new TextDecoder('utf-8');
+        
+        while (idx < N - 6) {
+            if (bytes[idx] !== 0x24 || bytes[idx+1] !== 0x47 || bytes[idx+2] !== 0x45 || bytes[idx+3] !== 0x4F || bytes[idx+4] !== 0x44 || bytes[idx+5] !== 0x2C) {
+                idx++;
+                continue;
+            }
+            
+            let comma1 = -1;
+            for (let j = idx + 6; j < idx + 30 && j < N; j++) {
+                if (bytes[j] === 0x2C) { comma1 = j; break; }
+            }
+            if (comma1 === -1) { idx++; continue; }
+            
+            let comma2 = -1;
+            for (let j = comma1 + 1; j < comma1 + 12 && j < N; j++) {
+                if (bytes[j] === 0x2C) { comma2 = j; break; }
+            }
+            if (comma2 === -1) { idx++; continue; }
+            
+            const utcMs = parseFloat(decoder.decode(bytes.subarray(idx + 6, comma1)));
+            const len = parseInt(decoder.decode(bytes.subarray(comma1 + 1, comma2)), 10);
+            
+            if (isNaN(len) || len < 0 || comma2 + 1 + len > N) {
+                idx++;
+                continue;
+            }
+            
+            if (!approxDateSet && !isEph && !isNaN(utcMs)) {
+                approxDateSet = true;
+                try {
+                    const d = new Date(utcMs);
+                    const y = d.getUTCFullYear();
+                    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+                    const r = String(d.getUTCDate()).padStart(2, '0');
+                    const dateStr = `${y}-${m}-${r}`;
+                    const dateEl = document.getElementById('approx-date');
+                    if (dateEl) dateEl.value = dateStr;
+                } catch(e) {}
+            }
+            
+            const packetBytes = bytes.subarray(comma2 + 1, comma2 + 1 + len);
+            packetBuffers.push(packetBytes);
+            totalRawLength += len;
+            
+            idx = comma2 + 1 + len;
+            if (idx < N && bytes[idx] === 0x0D) idx++;
+            if (idx < N && bytes[idx] === 0x0A) idx++;
+        }
+        
+        const rawRtcmBytes = new Uint8Array(totalRawLength);
+        let offset = 0;
+        for (const buf of packetBuffers) {
+            rawRtcmBytes.set(buf, offset);
+            offset += buf.length;
+        }
+        
+        const result = parseRTCMStream(rawRtcmBytes, isEph);
+        result.totalBytes = bytes.length;
+        return result;
+    }
+    return parseRTCMStream(arrayBuffer, isEph);
+}
+
+function parseRTCMStream(arrayBuffer, isEph = false) {
+    const bytes = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
+    const N = bytes.length;
 
     const result = {
         totalBytes: N,

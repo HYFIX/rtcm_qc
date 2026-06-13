@@ -192,6 +192,7 @@
         <button class="tab-btn" onclick="switchTab('multipath')">Multipath &amp; MW</button>
         <button class="tab-btn" onclick="switchTab('messages')">Messages</button>
         <button class="tab-btn" onclick="switchTab('skyplot')">Skyplot &amp; Visibility</button>
+        <button class="tab-btn" id="btn-latency" style="display:none" onclick="switchTab('latency')">Epoch Latency</button>
     </div>
 
     <!-- ============ OVERVIEW ============ -->
@@ -354,6 +355,41 @@
             <div class="card">
                 <h3>Observed vs Expected Satellites</h3>
                 <div class="chart-wrap h400"><canvas id="chart-visibility"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ EPOCH LATENCY ============ -->
+    <div id="tab-latency" class="tab-content">
+        <div class="stat-grid" id="stat-latency"></div>
+
+        <div class="layout-2">
+            <div class="card">
+                <h3>Time Delay over Time</h3>
+                <div class="chart-wrap h320"><canvas id="chart-latency-time"></canvas></div>
+            </div>
+            <div class="card">
+                <h3>Epoch Reception Duration</h3>
+                <div class="chart-wrap h320"><canvas id="chart-duration-time"></canvas></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Epoch Latency Breakdown Table</h3>
+            <div style="max-height: 400px; overflow-y: auto;">
+                <table class="tbl" id="latency-table">
+                    <thead>
+                        <tr>
+                            <th>GPS TOW (s)</th>
+                            <th>First Msg (UTC)</th>
+                            <th>Last Sync Msg (UTC)</th>
+                            <th>First Msg Delay (ms)</th>
+                            <th>Last Sync Delay (ms)</th>
+                            <th>Epoch Duration (ms)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="latency-table-body"></tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -1092,6 +1128,7 @@ function parseRTCM(arrayBuffer, isEph = false) {
     if (isGeodnet) {
         let approxDateSet = false;
         const packetBuffers = [];
+        const packetTimestamps = [];
         let totalRawLength = 0;
         
         let idx = 0;
@@ -1138,6 +1175,7 @@ function parseRTCM(arrayBuffer, isEph = false) {
             
             const packetBytes = bytes.subarray(comma2 + 1, comma2 + 1 + len);
             packetBuffers.push(packetBytes);
+            packetTimestamps.push(utcMs);
             totalRawLength += len;
             
             idx = comma2 + 1 + len;
@@ -1146,20 +1184,23 @@ function parseRTCM(arrayBuffer, isEph = false) {
         }
         
         const rawRtcmBytes = new Uint8Array(totalRawLength);
+        const byteMap = [];
         let offset = 0;
-        for (const buf of packetBuffers) {
-            rawRtcmBytes.set(buf, offset);
-            offset += buf.length;
+        for (let i = 0; i < packetBuffers.length; i++) {
+            rawRtcmBytes.set(packetBuffers[i], offset);
+            byteMap.push({ start: offset, end: offset + packetBuffers[i].length, utcMs: packetTimestamps[i] });
+            offset += packetBuffers[i].length;
         }
         
-        const result = parseRTCMStream(rawRtcmBytes, isEph);
+        const result = parseRTCMStream(rawRtcmBytes, isEph, byteMap);
         result.totalBytes = bytes.length;
+        result.isGeodnet = true;
         return result;
     }
     return parseRTCMStream(arrayBuffer, isEph);
 }
 
-function parseRTCMStream(arrayBuffer, isEph = false) {
+function parseRTCMStream(arrayBuffer, isEph = false, byteMap = null) {
     const bytes = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
     const N = bytes.length;
 
@@ -1209,6 +1250,7 @@ function parseRTCMStream(arrayBuffer, isEph = false) {
     };
 
     let idx = 0;
+    let byteMapPtr = 0;
     while (idx < N - 5) {
         if (bytes[idx] !== 0xD3) { idx++; continue; }
         if (idx + 3 >= N) break;
@@ -1273,6 +1315,26 @@ function parseRTCMStream(arrayBuffer, isEph = false) {
                     if (!curEpochSats[sys]) curEpochSats[sys] = new Set();
                     for (const prn of obs.satList) curEpochSats[sys].add(prn);
                     curEpochSigs.push(...obs.signals);
+
+                    let msgArrivalMs = null;
+                    if (byteMap) {
+                        while (byteMapPtr < byteMap.length && idx >= byteMap[byteMapPtr].end) {
+                            byteMapPtr++;
+                        }
+                        if (byteMapPtr < byteMap.length && idx >= byteMap[byteMapPtr].start) {
+                            msgArrivalMs = byteMap[byteMapPtr].utcMs;
+                        }
+                    }
+                    if (msgArrivalMs !== null) {
+                        if (!result.geodnetObsArrivals) result.geodnetObsArrivals = [];
+                        result.geodnetObsArrivals.push({
+                            type,
+                            sys,
+                            tow,
+                            sync: obs.sync,
+                            arrivalMs: msgArrivalMs
+                        });
+                    }
                 }
             } catch(e) { /* skip malformed */ }
         }
@@ -1711,6 +1773,112 @@ function computeStats(primary, eph) {
         });
     }
 
+    // --- GEODNET Latency Statistics ---
+    const latencyStats = {
+        epochs: [],
+        avgDelayFirst: 0,
+        minDelayFirst: Infinity,
+        maxDelayFirst: -Infinity,
+        avgDelayLast: 0,
+        minDelayLast: Infinity,
+        maxDelayLast: -Infinity,
+        avgDuration: 0,
+        minDuration: Infinity,
+        maxDuration: -Infinity
+    };
+
+    if (primary && primary.geodnetObsArrivals && primary.geodnetObsArrivals.length > 0) {
+        let refWeek = -1;
+        try {
+            const dateEl = document.getElementById('approx-date');
+            const dateStr = (dateEl && dateEl.value) || getSystemDateString();
+            refWeek = dateToGpsWeek(dateStr);
+        } catch(e) {}
+        if (refWeek === -1) refWeek = 2416; // Fallback
+
+        const groups = {};
+        for (const obs of primary.geodnetObsArrivals) {
+            if (!groups[obs.tow]) {
+                groups[obs.tow] = [];
+            }
+            groups[obs.tow].push(obs);
+        }
+
+        const tows = Object.keys(groups).map(Number).sort((a,b)=>a-b);
+        let sumDelayFirst = 0;
+        let sumDelayLast = 0;
+        let sumDuration = 0;
+        let count = 0;
+
+        for (const tow of tows) {
+            const list = groups[tow];
+            let firstArrivalMs = Infinity;
+            let lastSyncArrivalMs = -Infinity;
+            let hasSync = false;
+
+            for (const item of list) {
+                if (item.arrivalMs < firstArrivalMs) {
+                    firstArrivalMs = item.arrivalMs;
+                }
+                if (item.sync === 0) {
+                    hasSync = true;
+                    if (item.arrivalMs > lastSyncArrivalMs) {
+                        lastSyncArrivalMs = item.arrivalMs;
+                    }
+                }
+            }
+
+            if (!hasSync) {
+                for (const item of list) {
+                    if (item.arrivalMs > lastSyncArrivalMs) {
+                        lastSyncArrivalMs = item.arrivalMs;
+                    }
+                }
+            }
+
+            if (firstArrivalMs !== Infinity && lastSyncArrivalMs !== -Infinity) {
+                const epochUtcMs = 315964800000 + (refWeek * 604800 + tow) * 1000 - 18000;
+                const delayFirst = firstArrivalMs - epochUtcMs;
+                const delayLast = lastSyncArrivalMs - epochUtcMs;
+                const duration = lastSyncArrivalMs - firstArrivalMs;
+
+                latencyStats.epochs.push({
+                    tow,
+                    firstArrivalMs,
+                    lastSyncArrivalMs,
+                    delayFirst,
+                    delayLast,
+                    duration
+                });
+
+                sumDelayFirst += delayFirst;
+                sumDelayLast += delayLast;
+                sumDuration += duration;
+                count++;
+
+                if (delayFirst < latencyStats.minDelayFirst) latencyStats.minDelayFirst = delayFirst;
+                if (delayFirst > latencyStats.maxDelayFirst) latencyStats.maxDelayFirst = delayFirst;
+                if (delayLast < latencyStats.minDelayLast) latencyStats.minDelayLast = delayLast;
+                if (delayLast > latencyStats.maxDelayLast) latencyStats.maxDelayLast = delayLast;
+                if (duration < latencyStats.minDuration) latencyStats.minDuration = duration;
+                if (duration > latencyStats.maxDuration) latencyStats.maxDuration = duration;
+            }
+        }
+
+        if (count > 0) {
+            latencyStats.avgDelayFirst = sumDelayFirst / count;
+            latencyStats.avgDelayLast = sumDelayLast / count;
+            latencyStats.avgDuration = sumDuration / count;
+        } else {
+            latencyStats.minDelayFirst = 0;
+            latencyStats.maxDelayFirst = 0;
+            latencyStats.minDelayLast = 0;
+            latencyStats.maxDelayLast = 0;
+            latencyStats.minDuration = 0;
+            latencyStats.maxDuration = 0;
+        }
+    }
+
     return {
         nEpochs: epochs.length,
         expectedEpochs,
@@ -1730,7 +1898,8 @@ function computeStats(primary, eph) {
         mergedEph,
         skyplotRecords,
         skyplotSatData,
-        epochVisibility
+        epochVisibility,
+        latencyStats
     };
 }
 
@@ -2583,6 +2752,136 @@ function renderSkyplot(primary, stats) {
     });
 }
 
+function renderLatency(primary, stats) {
+    const lstats = stats.latencyStats;
+    if (!lstats || !lstats.epochs || lstats.epochs.length === 0) {
+        document.getElementById('tab-latency').innerHTML = `
+            <div class="card" style="border-left: 4px solid #ef4444;">
+                <h3>Latency Stats Unavailable</h3>
+                <p>Ensure you have loaded a primary GEODNET log file with raw arrival UTC timestamps.</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Render Stat Cards
+    const statOverview = document.getElementById('stat-latency');
+    statOverview.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-title">Avg First Msg Delay</div>
+            <div class="stat-value info">${lstats.avgDelayFirst.toFixed(1)}ms</div>
+            <div class="stat-sub">Min: ${lstats.minDelayFirst.toFixed(0)}ms | Max: ${lstats.maxDelayFirst.toFixed(0)}ms</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-title">Avg Last Sync Delay</div>
+            <div class="stat-value warn">${lstats.avgDelayLast.toFixed(1)}ms</div>
+            <div class="stat-sub">Min: ${lstats.minDelayLast.toFixed(0)}ms | Max: ${lstats.maxDelayLast.toFixed(0)}ms</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-title">Avg Epoch Duration</div>
+            <div class="stat-value good">${lstats.avgDuration.toFixed(1)}ms</div>
+            <div class="stat-sub">Min: ${lstats.minDuration.toFixed(0)}ms | Max: ${lstats.maxDuration.toFixed(0)}ms</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-title">Total Latency Epochs</div>
+            <div class="stat-value">${lstats.epochs.length}</div>
+            <div class="stat-sub">with valid timestamps</div>
+        </div>
+    `;
+
+    // Render Table Body
+    const tbody = document.getElementById('latency-table-body');
+    let html = '';
+    const maxRows = Math.min(lstats.epochs.length, 1000);
+    for (let i = 0; i < maxRows; i++) {
+        const ep = lstats.epochs[i];
+        let tFirst = '';
+        let tLast = '';
+        try {
+            tFirst = new Date(ep.firstArrivalMs).toISOString().split('T')[1].replace('Z','');
+            tLast = new Date(ep.lastSyncArrivalMs).toISOString().split('T')[1].replace('Z','');
+        } catch(e) {
+            tFirst = String(ep.firstArrivalMs);
+            tLast = String(ep.lastSyncArrivalMs);
+        }
+        html += `
+            <tr>
+                <td>${ep.tow.toFixed(1)}</td>
+                <td>${tFirst}</td>
+                <td>${tLast}</td>
+                <td>${ep.delayFirst.toFixed(1)}</td>
+                <td>${ep.delayLast.toFixed(1)}</td>
+                <td>${ep.duration.toFixed(1)}</td>
+            </tr>
+        `;
+    }
+    tbody.innerHTML = html;
+
+    // --- Time Delay Chart ---
+    const tows = lstats.epochs.map(e => e.tow);
+    const delayFirsts = lstats.epochs.map(e => e.delayFirst);
+    const delayLasts = lstats.epochs.map(e => e.delayLast);
+    
+    makeChart('chart-latency-time', {
+        type: 'line',
+        data: {
+            labels: tows.map(formatTOW),
+            datasets: [
+                {
+                    label: 'First Observation Msg Delay (ms)',
+                    data: delayFirsts,
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59,130,246,0.05)',
+                    borderWidth: 1.5,
+                    pointRadius: tows.length > 200 ? 0 : 2,
+                    fill: false
+                },
+                {
+                    label: 'Last Sync Observation Msg Delay (ms)',
+                    data: delayLasts,
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'rgba(245,158,11,0.05)',
+                    borderWidth: 1.5,
+                    pointRadius: tows.length > 200 ? 0 : 2,
+                    fill: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: darkPlugins,
+            scales: darkScales('Time of Week (TOW)', 'Delay (ms)')
+        }
+    });
+
+    // --- Epoch Reception Duration Chart ---
+    const durations = lstats.epochs.map(e => e.duration);
+    makeChart('chart-duration-time', {
+        type: 'line',
+        data: {
+            labels: tows.map(formatTOW),
+            datasets: [
+                {
+                    label: 'Whole Epoch Arrival Duration (ms)',
+                    data: durations,
+                    borderColor: '#10b981',
+                    backgroundColor: 'rgba(16,185,129,0.05)',
+                    borderWidth: 1.5,
+                    pointRadius: tows.length > 200 ? 0 : 2,
+                    fill: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: darkPlugins,
+            scales: darkScales('Time of Week (TOW)', 'Duration (ms)')
+        }
+    });
+}
+
 function exportCSV() {
     if (!gStats || !gStats.skyplotRecords || gStats.skyplotRecords.length === 0) {
         alert("No skyplot data available to export. Ensure you have loaded a primary RTCM file with 1005/1006 position messages and matching ephemeris messages.");
@@ -2640,6 +2939,14 @@ function reparseAndRender() {
 function renderAll() {
     if (!gPrimary) return;
     gStats = computeStats(gPrimary, gEph);
+    
+    // Toggle latency tab visibility based on GEODNET detection
+    const hasGeodnet = gPrimary && gPrimary.isGeodnet;
+    const btnLatency = document.getElementById('btn-latency');
+    if (btnLatency) {
+        btnLatency.style.display = hasGeodnet ? 'inline-block' : 'none';
+    }
+
     document.getElementById('tabs-container').style.display = 'flex';
 
     renderOverview(gPrimary, gStats, gEph);
@@ -2657,6 +2964,7 @@ function renderTabContent(tab) {
         case 'multipath':  renderMultipath(gStats); break;
         case 'messages':   renderMessages(gPrimary); break;
         case 'skyplot':    renderSkyplot(gPrimary, gStats); break;
+        case 'latency':    renderLatency(gPrimary, gStats); break;
     }
 }
 
@@ -2664,7 +2972,7 @@ function switchTab(tab) {
     currentTab = tab;
     document.querySelectorAll('#tabs-container .tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    const idx = ['overview','signals','satellites','timeline','multipath','messages','skyplot'].indexOf(tab);
+    const idx = ['overview','signals','satellites','timeline','multipath','messages','skyplot','latency'].indexOf(tab);
     document.querySelectorAll('#tabs-container .tab-btn')[idx]?.classList.add('active');
     document.getElementById('tab-' + tab)?.classList.add('active');
     if (tab !== 'overview') renderTabContent(tab);

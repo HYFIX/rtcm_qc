@@ -978,8 +978,8 @@ function decodeMSM(b, frameLen, type) {
     const cnr_bits   = (msm >= 6) ? 10 :  6;
     const cnr_scale  = (msm >= 6) ? 0.0625 : 1.0;
     const hasDR      = (msm === 5 || msm === 7);
-    const P_scale    = (msm >= 6) ? (CLIGHT * 1e-3 / (1 << 29)) : (CLIGHT * 1e-3 / (1 << 24));
-    const L_scale    = (msm >= 6) ? (CLIGHT * 1e-3 / (1 << 31)) : (CLIGHT * 1e-3 / (1 << 29));
+    const P_scale    = (msm >= 6) ? (CLIGHT * 1e-3 / Math.pow(2, 29)) : (CLIGHT * 1e-3 / Math.pow(2, 24));
+    const L_scale    = (msm >= 6) ? (CLIGHT * 1e-3 / Math.pow(2, 31)) : (CLIGHT * 1e-3 / Math.pow(2, 29));
     const fineP_inv  = (msm >= 6) ? -524288  : -16384;
     const fineL_inv  = (msm >= 6) ? -8388608 : -2097152;
 

@@ -13,6 +13,7 @@ A self-contained, client-side HTML tool for visualizing quality metrics from GNS
 | **Multipath/MW** | Bar charts of MP1/MP2 RMS and Melbourne–Wübbena std dev by satellite |
 | **Messages** | Raw message-type breakdown across all RTCM3 message types in the file |
 | **Skyplot & Visibility** | Polar skyplot with color-coded trajectories, expected vs tracked satellites line chart, elevation mask & date settings, CSV data export |
+| **Epoch Latency** | Statistical summary, charts, and detailed table for GEODNET packet arrival delays and sync durations |
 
 ## Usage
 
@@ -57,6 +58,11 @@ MW  = (LW - PN) / lambda_WL                      [cycles]
   [azimuth, elevation] = enu2azel(ecef2enu(rxXYZ, satXYZ))
   ```
 - **Dynamic Re-parsing**: If the approximate date is manually modified in the UI, the page automatically re-parses the raw binary file buffers to recalculate the GPS reference week number and update the decoded orbit coordinates from scratch.
+- **GEODNET Log Parsing**: Auto-detects the `$GEOD,received_utc_time_is_ms,buffer_length,raw_buffer\r\n` pattern. The binary parser scans raw byte offsets without string splitting to preserve binary data payloads containing commas or newlines.
+- **Arrival Latency & Sync Statistics**: For GEODNET logs, calculates epoch reception latency (first observation message arrival delay), sync latency (last synchronized message arrival delay), and total epoch reception duration relative to the epoch's true measurement time.
+- **RINEX 3.04 & 2.11 Exporters**:
+  - **RINEX 3.04**: Exports GPS, GLONASS, Galileo, and BeiDou observations.
+  - **RINEX 2.11**: Filters out unsupported constellations (BeiDou and QZSS), maps GPS/GLONASS P-code signals to `P1`/`P2`, maps Galileo signals to bands 1/5/6/7/8, and resolves signal collision/overwrite issues (e.g. `1C` and `1W` on L1) using dynamic prioritized band mapping.
 
 ## Dependencies
 

@@ -2974,7 +2974,8 @@ function getObsCodes(sys, sigName, rinexVersion) {
     } else {
         const band = sigName[0];
         let pCode = 'C' + band;
-        if ((sys === 'GPS' || sys === 'GLO') && (sigName.endsWith('P') || sigName.endsWith('W') || sigName.endsWith('Y'))) {
+        const suffix = sigName.slice(-1);
+        if ((sys === 'GPS' || sys === 'GLO') && (suffix === 'P' || suffix === 'W' || suffix === 'Y' || suffix === 'N' || suffix === 'D')) {
             pCode = 'P' + band;
         }
         return {
@@ -2983,6 +2984,49 @@ function getObsCodes(sys, sigName, rinexVersion) {
             S: 'S' + band
         };
     }
+}
+
+function getRinex2Value(sys, r2Type, obsMap) {
+    if (!obsMap) return null;
+    const typeChar = r2Type[0]; // 'C', 'P', 'L', 'S'
+    const band = r2Type[1];     // '1', '2', '5', '6', '7', '8'
+    
+    let candidates = [];
+    if (typeChar === 'C' || typeChar === 'P') {
+        if (band === '1') {
+            if (typeChar === 'C') {
+                candidates = ['1C', '1X', '1A', '1B', '1Z', '1S', '1L'];
+            } else { // 'P'
+                candidates = ['1W', '1P', '1Y', '1N'];
+            }
+        } else if (band === '2') {
+            if (typeChar === 'C') {
+                candidates = ['2X', '2C', '2S', '2L'];
+            } else { // 'P'
+                candidates = ['2W', '2P', '2Y'];
+            }
+        } else {
+            // For bands 5, 6, 7, 8, there are only 'C5', 'C6', 'C7', 'C8'
+            if (band === '5') candidates = ['5X', '5Q', '5I'];
+            else if (band === '6') candidates = ['6X', '6C', '6A', '6B', '6Z'];
+            else if (band === '7') candidates = ['7X', '7Q', '7I'];
+            else if (band === '8') candidates = ['8X', '8Q', '8I'];
+        }
+    } else { // 'L' or 'S'
+        if (band === '1') candidates = ['1C', '1X', '1W', '1P', '1A', '1B', '1Z', '1S', '1L'];
+        else if (band === '2') candidates = ['2X', '2W', '2C', '2P', '2S', '2L', '2Y'];
+        else if (band === '5') candidates = ['5X', '5Q', '5I'];
+        else if (band === '6') candidates = ['6X', '6C', '6A', '6B', '6Z'];
+        else if (band === '7') candidates = ['7X', '7Q', '7I'];
+        else if (band === '8') candidates = ['8X', '8Q', '8I'];
+    }
+    
+    for (const cand of candidates) {
+        if (obsMap[cand]) {
+            return { sigName: cand, data: obsMap[cand] };
+        }
+    }
+    return null;
 }
 
 function exportRinex() {
@@ -3003,7 +3047,10 @@ function exportRinex() {
     if (refWeek === -1) refWeek = 2416; // Fallback
     
     // Step 1: Scan all epochs to find unique signals per system
-    const sysSigs = { GPS: new Set(), GLO: new Set(), GAL: new Set(), BDS: new Set() };
+    const sysSigs = version === '2.11' ?
+        { GPS: new Set(), GLO: new Set(), GAL: new Set() } :
+        { GPS: new Set(), GLO: new Set(), GAL: new Set(), BDS: new Set() };
+        
     for (const ep of gPrimary.epochs) {
         for (const sg of ep.signals) {
             if (sysSigs[sg.sys] !== undefined) {
@@ -3012,7 +3059,7 @@ function exportRinex() {
         }
     }
     
-    const systems = ['GPS', 'GLO', 'GAL', 'BDS'];
+    const systems = version === '2.11' ? ['GPS', 'GLO', 'GAL'] : ['GPS', 'GLO', 'GAL', 'BDS'];
     const rinexSysChar = { GPS: 'G', GLO: 'R', GAL: 'E', BDS: 'C' };
     
     let header = '';
@@ -3265,23 +3312,22 @@ function exportRinex() {
                 let satObs = '';
                 for (let i = 0; i < globalObsTypes.length; i++) {
                     const r2Type = globalObsTypes[i];
-                    const sigName = r2Map[`${sys}-${r2Type}`];
                     const typeChar = r2Type[0];
                     
+                    const res = getRinex2Value(sys, r2Type, obsMap);
                     let val = 0;
                     let lli = ' ';
                     let ssi = ' ';
                     
-                    if (sigName && obsMap && obsMap[sigName]) {
-                        const data = obsMap[sigName];
+                    if (res) {
                         if (typeChar === 'C' || typeChar === 'P') {
-                            val = data.P;
+                            val = res.data.P;
                         } else if (typeChar === 'L') {
-                            val = data.L;
-                            lli = (data.lockSec !== undefined && data.lockSec < 1.0) ? '1' : ' ';
+                            val = res.data.L;
+                            lli = (res.data.lockSec !== undefined && res.data.lockSec < 1.0) ? '1' : ' ';
                         } else if (typeChar === 'S') {
-                            val = data.snr;
-                            ssi = getSnrSsi(data.snr);
+                            val = res.data.snr;
+                            ssi = getSnrSsi(res.data.snr);
                         }
                     }
                     

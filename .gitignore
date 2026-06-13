@@ -1,0 +1,9 @@
+# Test data and logs
+*.rtcm
+*.log
+*.csv
+*.nmea
+result.txt
+
+# Claude Code internal
+.claude/

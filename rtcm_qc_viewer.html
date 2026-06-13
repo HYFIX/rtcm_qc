@@ -1,0 +1,1609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GNSS RTCM Quality Control Viewer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0b0f19;
+            --card: rgba(17,24,39,0.7);
+            --border: rgba(255,255,255,0.08);
+            --text: #f3f4f6;
+            --muted: #9ca3af;
+            --primary: #3b82f6;
+            --glow: rgba(59,130,246,0.15);
+            --gps: #3b82f6; --glo: #f59e0b; --gal: #10b981;
+            --bds: #ef4444; --qzs: #ec4899; --sbs: #8b5cf6; --irn: #6366f1;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            background-image:
+                radial-gradient(at 0% 0%, rgba(59,130,246,0.1) 0, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(46,204,113,0.05) 0, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container { max-width: 1320px; width: 100%; display: flex; flex-direction: column; gap: 20px; }
+        header { text-align: center; margin-bottom: 8px; }
+        h1 {
+            font-family: 'Outfit', sans-serif; font-size: 2.6rem; font-weight: 800;
+            background: linear-gradient(135deg, #60a5fa, #3b82f6, #10b981);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            letter-spacing: -0.02em;
+        }
+        .subtitle { color: var(--muted); font-size: 1rem; margin-top: 6px; }
+
+        /* Drop zones */
+        .drop-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+        @media(max-width:768px) { .drop-grid { grid-template-columns: 1fr; } }
+        .drop-zone {
+            background: var(--card); border: 2px dashed rgba(59,130,246,0.3);
+            border-radius: 16px; padding: 36px 20px; text-align: center;
+            cursor: pointer; transition: all .3s; backdrop-filter: blur(12px);
+        }
+        .drop-zone.optional { border-color: rgba(139,92,246,0.3); }
+        .drop-zone:hover, .drop-zone.hover { border-color: var(--primary); background: rgba(59,130,246,0.05); transform: scale(1.01); }
+        .drop-zone.optional:hover, .drop-zone.optional.hover { border-color: #8b5cf6; background: rgba(139,92,246,0.05); }
+        .drop-zone.loaded { border-color: #10b981; border-style: solid; }
+        .drop-icon { font-size: 2.4rem; margin-bottom: 10px; display: block; }
+        .drop-text { font-size: 1.05rem; font-weight: 600; margin-bottom: 4px; }
+        .drop-sub { font-size: 0.82rem; color: var(--muted); }
+        .drop-filename { font-size: 0.78rem; color: #10b981; margin-top: 6px; font-family: monospace; }
+
+        /* Tabs */
+        .tabs { display: none; justify-content: center; gap: 10px; flex-wrap: wrap; }
+        .tab-btn {
+            background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+            color: var(--muted); padding: 9px 22px; border-radius: 30px;
+            cursor: pointer; font-family: 'Inter', sans-serif; font-weight: 600;
+            font-size: 0.88rem; transition: all .2s;
+        }
+        .tab-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
+        .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: var(--text); }
+        .tab-content { display: none; flex-direction: column; gap: 20px; }
+        .tab-content.active { display: flex; }
+
+        /* Cards */
+        .card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 20px; backdrop-filter: blur(12px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+        }
+        .card h3 { font-family: 'Outfit', sans-serif; font-size: 1rem; margin-bottom: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-size: .78rem; }
+        .card-title { font-family: 'Outfit', sans-serif; font-size: 1.1rem; font-weight: 600; color: var(--text); }
+
+        /* Stat grid */
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 14px; }
+        .stat-card {
+            background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+            padding: 16px 18px; text-align: center; backdrop-filter: blur(12px);
+        }
+        .stat-title { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+        .stat-value { font-size: 1.7rem; font-weight: 700; font-family: 'Outfit', sans-serif; }
+        .stat-sub { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+        .good { color: #10b981; } .warn { color: #f59e0b; } .bad { color: #ef4444; } .info { color: #3b82f6; }
+
+        /* Chart containers */
+        .chart-wrap { position: relative; width: 100%; }
+        .chart-wrap canvas { width: 100% !important; }
+        .h320 { height: 320px; }
+        .h400 { height: 400px; }
+        .h480 { height: 480px; }
+        .layout-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .layout-3-1 { display: grid; grid-template-columns: 3fr 1fr; gap: 20px; }
+        @media(max-width:900px) { .layout-2, .layout-3-1 { grid-template-columns: 1fr; } }
+
+        /* Table */
+        .tbl { width: 100%; border-collapse: collapse; font-size: .82rem; }
+        .tbl th { text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: .72rem; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
+        .tbl td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .tbl tr:hover td { background: rgba(255,255,255,0.02); }
+
+        /* Signal badge */
+        .sys-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: .72rem; font-weight: 700; font-family: monospace; }
+        .sys-GPS { background: rgba(59,130,246,0.15); color: #60a5fa; }
+        .sys-GLO { background: rgba(245,158,11,0.15); color: #fbbf24; }
+        .sys-GAL { background: rgba(16,185,129,0.15); color: #34d399; }
+        .sys-BDS { background: rgba(239,68,68,0.15); color: #f87171; }
+        .sys-QZS { background: rgba(236,72,153,0.15); color: #f472b6; }
+        .sys-SBS { background: rgba(139,92,246,0.15); color: #a78bfa; }
+        .sys-IRN { background: rgba(99,102,241,0.15); color: #818cf8; }
+
+        /* Gap item */
+        .gap-item { padding: 8px 12px; border-radius: 8px; border-left: 3px solid #ef4444; background: rgba(239,68,68,0.05); margin-bottom: 6px; font-size: .82rem; }
+        .info-item { padding: 8px 12px; border-radius: 8px; border-left: 3px solid #3b82f6; background: rgba(59,130,246,0.05); margin-bottom: 6px; font-size: .82rem; font-family: monospace; }
+
+        /* Progress bar */
+        .progress-bar-wrap { background: rgba(255,255,255,0.05); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 4px; }
+        .progress-bar { height: 100%; border-radius: 4px; transition: width .5s; }
+
+        /* Chart tab controls */
+        .chart-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+        .chart-tab { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--muted); padding: 5px 14px; border-radius: 18px; cursor: pointer; font-size: .78rem; font-weight: 600; }
+        .chart-tab.active { background: rgba(59,130,246,0.15); color: var(--primary); border-color: rgba(59,130,246,0.3); }
+
+        footer { text-align: center; color: var(--muted); font-size: .82rem; padding: 24px 0 8px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>RTCM QC Dashboard</h1>
+        <p class="subtitle">GNSS RTCM3 Signal Quality Analysis — Drag &amp; Drop binary RTCM logs for instant diagnostics</p>
+    </header>
+
+    <!-- Drop zones -->
+    <div class="drop-grid">
+        <div id="drop-primary" class="drop-zone">
+            <span class="drop-icon">📡</span>
+            <div class="drop-text">Primary RTCM File</div>
+            <div class="drop-sub">Observations for full QC analysis (MSM4–7, 1005/1006, 1033, ephemeris)</div>
+            <div class="drop-filename" id="primary-fname"></div>
+        </div>
+        <div id="drop-eph" class="drop-zone optional">
+            <span class="drop-icon">🛰️</span>
+            <div class="drop-text">Ephemeris RTCM (Optional)</div>
+            <div class="drop-sub">Supplement nav messages from a correction / reference stream</div>
+            <div class="drop-filename" id="eph-fname"></div>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div id="tabs-container" class="tabs">
+        <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+        <button class="tab-btn" onclick="switchTab('signals')">Signals</button>
+        <button class="tab-btn" onclick="switchTab('satellites')">Satellites</button>
+        <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
+        <button class="tab-btn" onclick="switchTab('multipath')">Multipath &amp; MW</button>
+        <button class="tab-btn" onclick="switchTab('messages')">Messages</button>
+    </div>
+
+    <!-- ============ OVERVIEW ============ -->
+    <div id="tab-overview" class="tab-content active">
+        <div class="stat-grid" id="stat-overview"></div>
+
+        <div class="layout-2">
+            <div class="card">
+                <h3>Message Count by Type</h3>
+                <div class="chart-wrap h320"><canvas id="chart-msgcount"></canvas></div>
+            </div>
+            <div class="card">
+                <h3>Satellite Count by System</h3>
+                <div class="chart-wrap h320"><canvas id="chart-syscount"></canvas></div>
+            </div>
+        </div>
+
+        <div class="card" id="card-station" style="display:none">
+            <h3>Station / Receiver Info</h3>
+            <div id="station-info"></div>
+        </div>
+
+        <div class="card" id="card-eph-overview" style="display:none">
+            <h3>Ephemeris Summary</h3>
+            <div id="eph-overview-content"></div>
+        </div>
+    </div>
+
+    <!-- ============ SIGNALS ============ -->
+    <div id="tab-signals" class="tab-content">
+        <div class="stat-grid" id="stat-signals"></div>
+
+        <div class="card">
+            <div class="chart-tabs" id="cnr-sys-tabs"></div>
+            <h3>CNR Distribution (dB-Hz)</h3>
+            <div class="chart-wrap h320"><canvas id="chart-cnr-hist"></canvas></div>
+        </div>
+
+        <div class="layout-2">
+            <div class="card">
+                <h3>CNR vs Time per System</h3>
+                <div class="chart-wrap h320"><canvas id="chart-cnr-time"></canvas></div>
+            </div>
+            <div class="card">
+                <h3>Signal Observation Counts</h3>
+                <div class="chart-wrap h320"><canvas id="chart-sig-count"></canvas></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Per-System Signal Table</h3>
+            <div id="signal-table"></div>
+        </div>
+    </div>
+
+    <!-- ============ SATELLITES ============ -->
+    <div id="tab-satellites" class="tab-content">
+        <div class="card">
+            <h3>Usable Satellite Count vs Time (L1/E1/B1/G1, CNR ≥ 32 dBHz)</h3>
+            <div class="chart-wrap h320"><canvas id="chart-snr-satcount"></canvas></div>
+        </div>
+
+        <div class="card">
+            <div class="chart-tabs" id="satcount-tabs"></div>
+            <h3>Satellite Count vs Time (all signals)</h3>
+            <div class="chart-wrap h320"><canvas id="chart-satcount-time"></canvas></div>
+        </div>
+
+        <div class="layout-2">
+            <div class="card">
+                <h3>Observations per Satellite</h3>
+                <div class="chart-wrap h400"><canvas id="chart-obs-per-sat"></canvas></div>
+            </div>
+            <div class="card">
+                <h3>Average CNR per Satellite</h3>
+                <div class="chart-wrap h400"><canvas id="chart-cnr-per-sat"></canvas></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Cycle Slips per Satellite</h3>
+            <div class="chart-wrap h320"><canvas id="chart-slips"></canvas></div>
+        </div>
+    </div>
+
+    <!-- ============ TIMELINE ============ -->
+    <div id="tab-timeline" class="tab-content">
+        <div class="card">
+            <h3>Data Availability Timeline</h3>
+            <div class="chart-wrap h400"><canvas id="chart-avail"></canvas></div>
+        </div>
+
+        <div class="layout-2">
+            <div class="card">
+                <h3>Epoch Interval Distribution</h3>
+                <div class="chart-wrap h320"><canvas id="chart-dt-dist"></canvas></div>
+            </div>
+            <div class="card">
+                <h3>Data Gaps</h3>
+                <div id="gap-list" style="max-height:300px;overflow-y:auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ MULTIPATH ============ -->
+    <div id="tab-multipath" class="tab-content">
+        <div class="stat-grid" id="stat-mp"></div>
+
+        <div class="layout-2">
+            <div class="card">
+                <h3>MP1 RMS per Satellite (m)</h3>
+                <div class="chart-wrap h400"><canvas id="chart-mp1"></canvas></div>
+            </div>
+            <div class="card">
+                <h3>MP2 RMS per Satellite (m)</h3>
+                <div class="chart-wrap h400"><canvas id="chart-mp2"></canvas></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Melbourne-Wübbena Wide-Lane per Satellite (cycles)</h3>
+            <div class="chart-wrap h320"><canvas id="chart-mw"></canvas></div>
+        </div>
+
+        <div class="card">
+            <h3>MP/MW Details Table</h3>
+            <div id="mp-table"></div>
+        </div>
+    </div>
+
+    <!-- ============ MESSAGES ============ -->
+    <div id="tab-messages" class="tab-content">
+        <div class="card">
+            <h3>Message Type Statistics</h3>
+            <div id="msg-table"></div>
+        </div>
+        <div class="layout-2">
+            <div class="card">
+                <h3>CRC Failures</h3>
+                <div id="crc-info"></div>
+            </div>
+            <div class="card">
+                <h3>Special Messages</h3>
+                <div id="special-msg"></div>
+            </div>
+        </div>
+    </div>
+
+    <footer>GNSS RTCM QC Viewer &copy; 2026 · Client-side binary RTCM3 processor · No data leaves your browser</footer>
+</div>
+
+<script>
+// ==========================================================================
+// CRC24Q
+// ==========================================================================
+const CRC24Q = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let c = i << 16;
+        for (let j = 0; j < 8; j++) c = (c << 1) ^ ((c & 0x800000) ? 0x864CFB : 0);
+        t[i] = c & 0xFFFFFF;
+    }
+    return t;
+})();
+
+function crc24q(b, start, len) {
+    let c = 0;
+    for (let i = start; i < start + len; i++) c = ((c << 8) ^ CRC24Q[((c >> 16) ^ b[i]) & 0xFF]) & 0xFFFFFF;
+    return c;
+}
+
+// ==========================================================================
+// Bit helpers (frame buffer relative to 0xD3 byte)
+// ==========================================================================
+function getu(b, pos, len) {
+    let v = 0;
+    for (let i = pos; i < pos + len; i++) v = v * 2 + ((b[i >> 3] >>> (7 - (i & 7))) & 1);
+    return v;
+}
+function gets(b, pos, len) {
+    let v = getu(b, pos, len);
+    if (len > 0 && (v & (1 << (len - 1)))) v -= (1 << len);
+    return v;
+}
+
+const CLIGHT = 299792458.0; // speed of light (m/s)
+
+// ==========================================================================
+// MSM definitions
+// ==========================================================================
+const SYS_MSM = {
+    GPS: { range: [1071,1077], col: '#3b82f6' },
+    GLO: { range: [1081,1087], col: '#f59e0b' },
+    GAL: { range: [1091,1097], col: '#10b981' },
+    SBS: { range: [1101,1107], col: '#8b5cf6' },
+    QZS: { range: [1111,1117], col: '#ec4899' },
+    BDS: { range: [1121,1127], col: '#ef4444' },
+    IRN: { range: [1131,1137], col: '#6366f1' }
+};
+
+// Signal names indexed by 1-based RTCM MSM signal number (from rtklib/src/rtcm3.c msm_sig_* tables)
+const SIG_NAMES = {
+    GPS: { 2:'1C', 3:'1P', 4:'1W',
+           8:'2C', 9:'2P', 10:'2W', 15:'2S', 16:'2L', 17:'2X',
+           22:'5I', 23:'5Q', 24:'5X',
+           30:'1S', 31:'1L', 32:'1X' },
+    GLO: { 2:'1C', 3:'1P', 8:'2C', 9:'2P' },
+    GAL: { 2:'1C', 3:'1A', 4:'1B', 5:'1X', 6:'1Z',
+           8:'6C', 9:'6A', 10:'6B', 11:'6X', 12:'6Z',
+           14:'7I', 15:'7Q', 16:'7X',
+           18:'8I', 19:'8Q', 20:'8X',
+           22:'5I', 23:'5Q', 24:'5X' },
+    QZS: { 2:'1C',
+           9:'6S', 10:'6L', 11:'6X',
+           15:'2S', 16:'2L', 17:'2X',
+           22:'5I', 23:'5Q', 24:'5X',
+           30:'1S', 31:'1L', 32:'1X' },
+    SBS: { 2:'1C', 22:'5I', 23:'5Q', 24:'5X' },
+    BDS: { 2:'2I', 3:'2Q', 4:'2X',
+           8:'6I', 9:'6Q', 10:'6X',
+           14:'7I', 15:'7Q', 16:'7X',
+           22:'5D', 23:'5P', 24:'5X',
+           25:'7D',
+           30:'1D', 31:'1P', 32:'1X' },
+    IRN: { 23:'5A' }
+};
+
+const EPH_TYPES = { 1019:'GPS',1020:'GLO',1041:'IRN',1042:'BDS',1044:'QZS',1045:'GAL(FNAV)',1046:'GAL(INAV)' };
+
+// GLO frequency channel number defaults (from rtklib/src/rtkcmn.c get_glo_fcn_default)
+const GLO_FCN_DEFAULT = {
+    1:1, 2:-4, 3:5, 4:6, 5:1, 6:-4, 7:5, 8:6,
+    9:-2, 10:-7, 11:0, 12:-1, 13:-2, 14:-7, 15:0, 16:-1,
+    17:4, 18:-3, 19:3, 20:2, 21:4, 22:-3, 23:3, 24:2,
+    25:-5, 26:-6
+};
+const FREQ1_GLO = 1602.0e6, DFRQ1_GLO = 0.5625e6;
+const FREQ2_GLO = 1246.0e6, DFRQ2_GLO = 0.4375e6;
+
+function getMsgSys(type) {
+    for (const [sys, info] of Object.entries(SYS_MSM)) {
+        if (type >= info.range[0] && type <= info.range[1]) return sys;
+    }
+    return null;
+}
+
+function getMsmLevel(type) {
+    const sys = getMsgSys(type);
+    if (!sys) return 0;
+    return type - SYS_MSM[sys].range[0] + 1; // 1-7
+}
+
+// ==========================================================================
+// Lock time indicator → seconds (approximate)
+// ==========================================================================
+function lti4toSec(v) {
+    if (v <= 0) return 0;
+    if (v <= 1) return 0.032;
+    return 0.032 * Math.pow(2, v - 1);
+}
+function lti10toSec(v) {
+    if (v < 64) return v;
+    if (v < 128) return (v - 64) * 2 + 64;
+    if (v < 256) return (v - 128) * 4 + 128;
+    if (v < 512) return (v - 256) * 8 + 256;
+    return (v - 512) * 16 + 512;
+}
+
+// ==========================================================================
+// MSM decoder
+// ==========================================================================
+function decodeMSM(b, frameLen, type) {
+    const msm = getMsmLevel(type);
+    const sys = getMsgSys(type);
+    if (!sys || msm < 4) return null; // only MSM4-7
+
+    let i = 24; // skip RTCM frame header (3 bytes × 8 bits)
+    i += 12;    // skip DF002 message number (already in `type`)
+    const staid = getu(b, i, 12); i += 12; // DF003: reference station ID
+
+    let tow;
+    if (sys === 'GLO') {
+        const dow = getu(b, i, 3); i += 3;
+        const tod = getu(b, i, 27) * 0.001; i += 27;
+        tow = dow * 86400 + tod - 3 * 3600 + 18; // GLO→GPS approx
+    } else {
+        tow = getu(b, i, 30) * 0.001; i += 30;
+        if (sys === 'BDS') tow += 14; // BDT→GPST
+    }
+
+    const sync = getu(b, i, 1); i += 1;
+    i += 3 + 7 + 2 + 2 + 1 + 3; // IODS, reserved, clk, smooth
+
+    // Satellite mask (64 bits)
+    const satList = [];
+    for (let k = 0; k < 64; k++) {
+        if (getu(b, i + k, 1)) satList.push(k + 1);
+    }
+    i += 64;
+
+    // Signal mask (32 bits)
+    const sigList = [];
+    for (let k = 0; k < 32; k++) {
+        if (getu(b, i + k, 1)) sigList.push(k + 1);
+    }
+    i += 32;
+
+    const nSat = satList.length;
+    const nSig = sigList.length;
+
+    // Cell mask
+    const cell = [];
+    for (let k = 0; k < nSat * nSig; k++) {
+        cell.push(getu(b, i, 1)); i++;
+    }
+
+    // ---- Satellite data ----
+    const roughR_int = [];
+    for (let s = 0; s < nSat; s++) { roughR_int.push(getu(b, i, 8)); i += 8; }
+
+    if (msm >= 5) { i += nSat * 4; } // extended info
+
+    const roughR_mod = [];
+    for (let s = 0; s < nSat; s++) { roughR_mod.push(getu(b, i, 10)); i += 10; }
+
+    if (msm >= 5) { i += nSat * 14; } // rough Doppler (unused)
+
+    // Rough range in meters
+    const roughRange = roughR_int.map((r, s) => (r !== 255 ? (r + roughR_mod[s] / 1024.0) * 299792.458 : 0));
+
+    // ---- Signal data (RTCM3 MSM: columnar format — all fields for each type first) ----
+    const fineP_bits = (msm >= 6) ? 20 : 15;
+    const fineL_bits = (msm >= 6) ? 24 : 22;
+    const lock_bits  = (msm >= 6) ? 10 :  4;
+    const cnr_bits   = (msm >= 6) ? 10 :  6;
+    const cnr_scale  = (msm >= 6) ? 0.0625 : 1.0;
+    const hasDR      = (msm === 5 || msm === 7);
+    const P_scale    = (msm >= 6) ? (CLIGHT * 1e-3 / (1 << 29)) : (CLIGHT * 1e-3 / (1 << 24));
+    const L_scale    = (msm >= 6) ? (CLIGHT * 1e-3 / (1 << 31)) : (CLIGHT * 1e-3 / (1 << 29));
+    const fineP_inv  = (msm >= 6) ? -524288  : -16384;
+    const fineL_inv  = (msm >= 6) ? -8388608 : -2097152;
+
+    // Collect valid (sat, sig) pairs
+    const validCells = [];
+    for (let s = 0; s < nSat; s++)
+        for (let sg = 0; sg < nSig; sg++)
+            if (cell[s * nSig + sg]) validCells.push({s, sg});
+    const nCell = validCells.length;
+
+    // Read each column for all valid cells
+    const fpArr = [], flArr = [], lkArr = [], hcArr = [], cnrRawArr = [];
+    for (let c = 0; c < nCell; c++) { fpArr.push(gets(b, i, fineP_bits)); i += fineP_bits; }
+    for (let c = 0; c < nCell; c++) { flArr.push(gets(b, i, fineL_bits)); i += fineL_bits; }
+    for (let c = 0; c < nCell; c++) { lkArr.push(getu(b, i, lock_bits));  i += lock_bits;  }
+    for (let c = 0; c < nCell; c++) { hcArr.push(getu(b, i, 1));          i += 1;          }
+    for (let c = 0; c < nCell; c++) { cnrRawArr.push(getu(b, i, cnr_bits)); i += cnr_bits; }
+    if (hasDR) { i += nCell * 15; } // fine Doppler (unused)
+
+    const signals = [];
+    for (let c = 0; c < nCell; c++) {
+        const {s, sg} = validCells[c];
+        const fineP = fpArr[c], fineL = flArr[c];
+        const cnr = cnrRawArr[c] * cnr_scale;
+        const lockSec = (lock_bits === 10) ? lti10toSec(lkArr[c]) : lti4toSec(lkArr[c]);
+        const P = (fineP !== fineP_inv && roughR_int[s] !== 255) ? (roughRange[s] + fineP * P_scale) : 0;
+        // Phase range in meters (same scale as P; offset by integer ambiguity × wavelength)
+        const L = (fineL !== fineL_inv && roughR_int[s] !== 255) ? (roughRange[s] + fineL * L_scale) : 0;
+        const sigName = (SIG_NAMES[sys] && SIG_NAMES[sys][sigList[sg]]) || ('S' + sigList[sg]);
+        signals.push({ sys, prn: satList[s], sigId: sigList[sg], sigName, cnr, lockSec, lock: lkArr[c], halfC: hcArr[c], P, L, tow });
+    }
+
+    return { type, sys, msm, staid, tow, sync, satList, sigList, signals, nSat, nSig };
+}
+
+// ==========================================================================
+// Parse station position (1005 / 1006)
+// ==========================================================================
+function decode1005(b) {
+    let i = 24;
+    i += 12; // skip DF002 message number
+    const staid = getu(b, i, 12); i += 12; // DF003: station ID
+    i += 6;  // DF021: ITRF realization year
+    i += 4;  // DF022-024/DF141: GPS/GLO/GAL/Ref indicators
+    const X = gets(b, i, 38) * 0.0001; i += 38;
+    i += 2;
+    const Y = gets(b, i, 38) * 0.0001; i += 38;
+    i += 2;
+    const Z = gets(b, i, 38) * 0.0001; i += 38;
+    return { staid, xyz: [X, Y, Z] };
+}
+
+// Parse 1033
+function decode1033(b) {
+    let i = 24;
+    i += 12; // skip DF002 message number
+    const staid = getu(b, i, 12); i += 12; // DF003: station ID
+    // Descriptor strings
+    const readStr = (bits) => {
+        const n = getu(b, i, bits); i += bits;
+        let s = '';
+        for (let k = 0; k < n; k++) { s += String.fromCharCode(getu(b, i, 8)); i += 8; }
+        return s;
+    };
+    const antDes = readStr(8);
+    const setup  = getu(b, i, 8); i += 8;
+    const antSno = readStr(8);
+    const recType = readStr(8);
+    const recFw  = readStr(8);
+    const recSno = readStr(8);
+    return { staid, antDes, antSno, recType, recFw, recSno };
+}
+
+// ==========================================================================
+// ECEF → LLH
+// ==========================================================================
+function ecef2llh(xyz) {
+    const a = 6378137.0, f = 1/298.257223563;
+    const e2 = f*(2-f);
+    const [x, y, z] = xyz;
+    const p = Math.sqrt(x*x + y*y);
+    let lat = Math.atan2(z, p*(1-e2));
+    for (let k = 0; k < 10; k++) {
+        const N = a / Math.sqrt(1 - e2*Math.sin(lat)**2);
+        lat = Math.atan2(z + e2*N*Math.sin(lat), p);
+    }
+    const N = a / Math.sqrt(1 - e2*Math.sin(lat)**2);
+    const lon = Math.atan2(y, x);
+    const ht = p/Math.cos(lat) - N;
+    return [lat*180/Math.PI, lon*180/Math.PI, ht];
+}
+
+// ==========================================================================
+// Main RTCM3 parser
+// ==========================================================================
+function parseRTCM(arrayBuffer, isEph = false) {
+    const bytes = new Uint8Array(arrayBuffer);
+    const N = bytes.length;
+
+    const result = {
+        totalBytes: N,
+        totalMsg: 0,
+        crcFail: 0,
+        msgCount: {},
+        epochs: [],           // { tow, sys, nSat, signals: [] }
+        stationPos: null,
+        stationInfo: null,
+        eph: {},              // { GPS: {prn: count}, GLO: {...}, ... }
+        gloFcn: {},           // GLO PRN → frequency channel number (from 1020)
+        rawSignals: [],       // all decoded signal obs (thinned for memory)
+        crcFailBytes: []
+    };
+
+    // epoch accumulation
+    let curTow = -1;
+    let curEpochSats = {}; // sys → Set of PRN
+    let curEpochSigs = []; // signal obs for current epoch
+
+    const flushEpoch = () => {
+        if (curTow < 0) return;
+        const epoch = { tow: curTow, systems: {} };
+        for (const [sys, prns] of Object.entries(curEpochSats)) {
+            epoch.systems[sys] = [...prns];
+        }
+        epoch.signals = curEpochSigs;
+        result.epochs.push(epoch);
+        // thin signals for memory (keep at most 2000 per epoch)
+        const thin = curEpochSigs.length > 200 ? curEpochSigs.filter((_,k)=>k%2===0) : curEpochSigs;
+        result.rawSignals.push(...thin);
+        curEpochSats = {};
+        curEpochSigs = [];
+        curTow = -1;
+    };
+
+    let idx = 0;
+    while (idx < N - 5) {
+        if (bytes[idx] !== 0xD3) { idx++; continue; }
+        if (idx + 3 >= N) break;
+        const len = ((bytes[idx+1] & 0x03) << 8) | bytes[idx+2];
+        if (len < 1 || idx + len + 6 > N) { idx++; continue; }
+
+        const crcCalc = crc24q(bytes, idx, len + 3);
+        const crcRead = (bytes[idx+len+3] << 16) | (bytes[idx+len+4] << 8) | bytes[idx+len+5];
+
+        if (crcCalc !== crcRead) {
+            result.crcFail++;
+            idx++;
+            continue;
+        }
+
+        const frame = bytes.subarray(idx, idx + len + 6);
+        const type = (frame[3] << 4) | (frame[4] >>> 4);
+
+        result.totalMsg++;
+        result.msgCount[type] = (result.msgCount[type] || 0) + 1;
+
+        // Station info
+        if (type === 1005 || type === 1006) {
+            try { result.stationPos = decode1005(frame); } catch(e) {}
+        } else if (type === 1033) {
+            try { result.stationInfo = decode1033(frame); } catch(e) {}
+        }
+
+        // Ephemeris count
+        if (EPH_TYPES[type]) {
+            const sys = EPH_TYPES[type].split('(')[0];
+            if (!result.eph[sys]) result.eph[sys] = {};
+            // PRN is in next 6-10 bits after type (rough extraction)
+            try {
+                let prn = 0;
+                if (type === 1019) { prn = getu(frame, 36, 6); } // GPS
+                else if (type === 1020) {
+                    prn = getu(frame, 36, 6); // GLO slot number
+                    const fcn = gets(frame, 42, 5); // DF040: FCN, signed 5-bit
+                    if (prn > 0 && fcn >= -7 && fcn <= 6) result.gloFcn[prn] = fcn;
+                }
+                else if (type === 1042) { prn = getu(frame, 36, 6); } // BDS
+                else if (type === 1044) { prn = getu(frame, 36, 4); } // QZS
+                else if (type === 1045 || type === 1046) { prn = getu(frame, 36, 6); } // GAL
+                else if (type === 1041) { prn = getu(frame, 36, 6); } // IRN
+                if (prn > 0) result.eph[sys][prn] = (result.eph[sys][prn] || 0) + 1;
+            } catch(e) {}
+        }
+
+        // MSM observations
+        const sys = getMsgSys(type);
+        const msm = getMsmLevel(type);
+        if (sys && msm >= 4) {
+            try {
+                const obs = decodeMSM(frame, len + 6, type);
+                if (obs) {
+                    const tow = Math.round(obs.tow * 1000) / 1000;
+                    if (curTow >= 0 && Math.abs(tow - curTow) > 0.001) {
+                        flushEpoch(); // curTow reset to -1 inside
+                    }
+                    curTow = tow;
+
+                    if (!curEpochSats[sys]) curEpochSats[sys] = new Set();
+                    for (const prn of obs.satList) curEpochSats[sys].add(prn);
+                    curEpochSigs.push(...obs.signals);
+                }
+            } catch(e) { /* skip malformed */ }
+        }
+
+        idx += len + 6;
+    }
+    flushEpoch();
+
+    return result;
+}
+
+// ==========================================================================
+// Statistics
+// ==========================================================================
+function computeStats(primary, eph) {
+    const epochs = primary.epochs;
+    const sigs = primary.rawSignals;
+
+    // --- Epoch stats ---
+    let intervals = [];
+    for (let i = 1; i < epochs.length; i++) {
+        let dt = epochs[i].tow - epochs[i-1].tow;
+        if (dt < -302400) dt += 604800;
+        if (dt > 0 && dt < 3600) intervals.push(Math.round(dt * 100) / 100);
+    }
+
+    // Dominant interval
+    let intervalCounts = {};
+    for (const v of intervals) intervalCounts[v] = (intervalCounts[v] || 0) + 1;
+    let sampleInterval = 1.0;
+    let maxC = 0;
+    for (const [v, c] of Object.entries(intervalCounts)) {
+        if (c > maxC) { maxC = c; sampleInterval = parseFloat(v); }
+    }
+
+    const t0 = epochs.length > 0 ? epochs[0].tow : 0;
+    const t1 = epochs.length > 0 ? epochs[epochs.length-1].tow : 0;
+    const expectedEpochs = sampleInterval > 0 ? Math.round((t1 - t0) / sampleInterval) + 1 : 0;
+    const dataRate = expectedEpochs > 0 ? epochs.length / expectedEpochs * 100 : 0;
+
+    // Gaps
+    const gaps = [];
+    for (let i = 1; i < epochs.length; i++) {
+        let dt = epochs[i].tow - epochs[i-1].tow;
+        if (dt < -302400) dt += 604800;
+        if (dt > sampleInterval * 1.5 + 0.01) {
+            gaps.push({ tow: epochs[i-1].tow, dt, missed: Math.round(dt / sampleInterval) - 1 });
+        }
+    }
+
+    // --- System satellite counts ---
+    const sysEpochCounts = {}; // sys → [count per epoch]
+    for (const ep of epochs) {
+        for (const [sys, prns] of Object.entries(ep.systems)) {
+            if (!sysEpochCounts[sys]) sysEpochCounts[sys] = [];
+            sysEpochCounts[sys].push(prns.length);
+        }
+    }
+    const sysAvgSats = {};
+    for (const [sys, counts] of Object.entries(sysEpochCounts)) {
+        sysAvgSats[sys] = counts.reduce((a,b)=>a+b,0) / counts.length;
+    }
+
+    // --- CNR stats ---
+    const cnrBySys = {};
+    const cnrBySat = {};  // "GPS-1": [cnr values]
+    const obsBySat = {};
+    const slipBySat = {};
+    const lockHistory = {}; // "GPS-1-1C": last lock value
+
+    for (const sg of sigs) {
+        const key = `${sg.sys}-${sg.prn}`;
+        if (!cnrBySys[sg.sys]) cnrBySys[sg.sys] = [];
+        if (!cnrBySat[key]) cnrBySat[key] = [];
+        if (!obsBySat[key]) obsBySat[key] = 0;
+        if (!slipBySat[key]) slipBySat[key] = 0;
+
+        if (sg.cnr > 0) cnrBySys[sg.sys].push(sg.cnr);
+        if (sg.cnr > 0) cnrBySat[key].push(sg.cnr);
+        obsBySat[key]++;
+
+        // Cycle slip detection: lockSec decreased
+        const lkey = `${key}-${sg.sigName}`;
+        if (lockHistory[lkey] !== undefined && sg.lockSec < lockHistory[lkey] && lockHistory[lkey] > 0.5) {
+            slipBySat[key]++;
+        }
+        lockHistory[lkey] = sg.lockSec;
+    }
+
+    const cnrAvgBySat = {};
+    for (const [k, vals] of Object.entries(cnrBySat)) {
+        cnrAvgBySat[k] = vals.length > 0 ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+    }
+
+    // --- Multipath (MP) and MW ---
+    // Frequencies keyed by system then RTCM 2-char signal code (Hz)
+    const FREQ = {
+        GPS: { '1C':1575.42e6, '1P':1575.42e6, '1W':1575.42e6, '1S':1575.42e6, '1L':1575.42e6, '1X':1575.42e6,
+               '2C':1227.60e6, '2P':1227.60e6, '2W':1227.60e6, '2S':1227.60e6, '2L':1227.60e6, '2X':1227.60e6,
+               '5I':1176.45e6, '5Q':1176.45e6, '5X':1176.45e6 },
+        GAL: { '1C':1575.42e6, '1A':1575.42e6, '1B':1575.42e6, '1X':1575.42e6, '1Z':1575.42e6,
+               '6C':1278.75e6, '6A':1278.75e6, '6B':1278.75e6, '6X':1278.75e6, '6Z':1278.75e6,
+               '7I':1207.14e6, '7Q':1207.14e6, '7X':1207.14e6,
+               '8I':1191.795e6,'8Q':1191.795e6,'8X':1191.795e6,
+               '5I':1176.45e6, '5Q':1176.45e6, '5X':1176.45e6 },
+        BDS: { '2I':1561.098e6,'2Q':1561.098e6,'2X':1561.098e6,
+               '6I':1268.52e6, '6Q':1268.52e6, '6X':1268.52e6,
+               '7I':1207.14e6, '7Q':1207.14e6, '7X':1207.14e6, '7D':1207.14e6,
+               '5D':1176.45e6, '5P':1176.45e6, '5X':1176.45e6,
+               '1D':1575.42e6, '1P':1575.42e6, '1X':1575.42e6 },
+        QZS: { '1C':1575.42e6, '1S':1575.42e6, '1L':1575.42e6, '1X':1575.42e6,
+               '2S':1227.60e6, '2L':1227.60e6, '2X':1227.60e6,
+               '5I':1176.45e6, '5Q':1176.45e6, '5X':1176.45e6,
+               '6S':1278.75e6, '6L':1278.75e6, '6X':1278.75e6 },
+        SBS: { '1C':1575.42e6, '5I':1176.45e6, '5Q':1176.45e6, '5X':1176.45e6 },
+        IRN: { '5A':1176.45e6, '9A':2492.028e6 }
+    };
+    // PRN-aware frequency: GLO uses per-satellite FCN (from 1020 or default table)
+    const gloFcnMap = { ...(primary.gloFcn || {}), ...(eph && eph.gloFcn ? eph.gloFcn : {}) };
+    function getSigFreq(sigName, sys, prn) {
+        if (sys === 'GLO') {
+            const fcn = gloFcnMap[prn] !== undefined ? gloFcnMap[prn]
+                      : (GLO_FCN_DEFAULT[prn] !== undefined ? GLO_FCN_DEFAULT[prn] : 0);
+            if (sigName === '1C' || sigName === '1P') return FREQ1_GLO + DFRQ1_GLO * fcn;
+            if (sigName === '2C' || sigName === '2P') return FREQ2_GLO + DFRQ2_GLO * fcn;
+            return 0;
+        }
+        return (FREQ[sys] && FREQ[sys][sigName]) || 0;
+    }
+
+    // Use full ep.signals (not thinned rawSignals) so dual-freq pairs are never lost.
+    // Iterate epochs in chronological order (they are already stored in order).
+    // Arc tracking: 50-epoch sliding-window mean per satellite pair, reset on lock-time
+    // decrease (cycle slip). Matches geo_qc: beta=(FREQ1/f)^2, ion=-(L1-L2)/(b1-b2),
+    // MP = P - L - 2*beta*ion, corrected = raw_MP - windowed_mean.
+    const FREQ1_GPS = 1575.42e6; // reference for BETAF (geo_qc #define FREQ1)
+    const MP_WIN    = 50;        // sliding-window length (geo_qc uses 50 epochs)
+
+    const mpBySat = {};  // pairKey → {sys,prn,sig1,sig2, mp1:[corrected],mp2:[],mw:[cycles]}
+    const arcMP   = {};  // pairKey → arc state {buf1[],buf2[],sum1,sum2,ptr,lk1,lk2}
+
+    for (const ep of epochs) {
+        // Group this epoch's signals by satellite
+        const satSigs = {};
+        for (const sg of ep.signals) {
+            const sk = sg.sys + '\x00' + sg.prn;
+            if (!satSigs[sk]) satSigs[sk] = [];
+            satSigs[sk].push(sg);
+        }
+
+        for (const sigs_sat of Object.values(satSigs)) {
+            if (sigs_sat.length < 2) continue;
+            const { sys, prn } = sigs_sat[0];
+
+            for (let a = 0; a < sigs_sat.length - 1; a++) {
+                for (let b2 = a + 1; b2 < sigs_sat.length; b2++) {
+                    const s1 = sigs_sat[a], s2 = sigs_sat[b2];
+                    if (!s1.P || !s1.L || !s2.P || !s2.L) continue;
+                    const f1 = getSigFreq(s1.sigName, sys, prn);
+                    const f2 = getSigFreq(s2.sigName, sys, prn);
+                    if (!f1 || !f2 || Math.abs(f1 - f2) < 1e6) continue;
+
+                    // Ensure ff1 > ff2 (higher frequency = lower beta = "L1" side)
+                    const [ff1, ff2, ss1, ss2] = f1 > f2 ? [f1,f2,s1,s2] : [f2,f1,s2,s1];
+                    const L1m = ss1.L, L2m = ss2.L;
+                    if (!L1m || !L2m) continue;
+
+                    // geo_qc formula: BETAF(f)=(FREQ1/f)^2, same as classic MP with freq terms
+                    const b1 = (FREQ1_GPS / ff1) ** 2;
+                    const b2c = (FREQ1_GPS / ff2) ** 2;
+                    const ion = -(L1m - L2m) / (b1 - b2c);
+                    const rawMP1 = ss1.P - L1m - 2 * b1  * ion;
+                    const rawMP2 = ss2.P - L2m - 2 * b2c * ion;
+                    if (!isFinite(rawMP1) || !isFinite(rawMP2)) continue;
+                    if (Math.abs(rawMP1) > 100 || Math.abs(rawMP2) > 100) continue;
+
+                    const pairKey = `${sys}-${String(prn).padStart(2,'0')}-${ss1.sigName}-${ss2.sigName}`;
+
+                    // Arc detection: lock time decrease → cycle slip → reset window
+                    let arc = arcMP[pairKey];
+                    const slip = arc && (ss1.lockSec < arc.lk1 - 0.001 || ss2.lockSec < arc.lk2 - 0.001);
+
+                    if (!arc || slip) {
+                        // New arc: seed circular buffer with first value
+                        arcMP[pairKey] = { buf1: [rawMP1], buf2: [rawMP2], sum1: rawMP1, sum2: rawMP2, ptr: 0, lk1: ss1.lockSec, lk2: ss2.lockSec };
+                    } else {
+                        if (arc.buf1.length < MP_WIN) {
+                            arc.buf1.push(rawMP1); arc.buf2.push(rawMP2);
+                            arc.sum1 += rawMP1;    arc.sum2 += rawMP2;
+                        } else {
+                            // Slide: subtract oldest slot, insert new value
+                            arc.sum1 += rawMP1 - arc.buf1[arc.ptr];
+                            arc.sum2 += rawMP2 - arc.buf2[arc.ptr];
+                            arc.buf1[arc.ptr] = rawMP1;
+                            arc.buf2[arc.ptr] = rawMP2;
+                            arc.ptr = (arc.ptr + 1) % MP_WIN;
+                        }
+                        arc.lk1 = ss1.lockSec; arc.lk2 = ss2.lockSec;
+                    }
+                    arc = arcMP[pairKey];
+                    const n = arc.buf1.length;
+                    // Corrected = raw − windowed mean (geo_qc: MP1m − mMP1m)
+                    const corrMP1 = rawMP1 - arc.sum1 / n;
+                    const corrMP2 = rawMP2 - arc.sum2 / n;
+
+                    if (!mpBySat[pairKey]) mpBySat[pairKey] = { sys, prn, sig1: ss1.sigName, sig2: ss2.sigName, mp1: [], mp2: [], mw: [] };
+                    mpBySat[pairKey].mp1.push(corrMP1);
+                    mpBySat[pairKey].mp2.push(corrMP2);
+
+                    // MW wide-lane (geo_qc: LWm=(L1*f1−L2*f2)/(f1−f2), PNm=(P1*f1+P2*f2)/(f1+f2))
+                    const waveLW = CLIGHT / (ff1 - ff2);
+                    const LWm = (L1m * ff1 - L2m * ff2) / (ff1 - ff2); // meters
+                    const PNm = (ss1.P * ff1 + ss2.P * ff2) / (ff1 + ff2); // meters
+                    const MW  = (LWm - PNm) / waveLW; // cycles (matches geo_qc MWm/waveLW)
+                    if (Math.abs(MW) < 1000) mpBySat[pairKey].mw.push(MW);
+                }
+            }
+        }
+    }
+
+    // Final RMS: remove residual mean of corrected values (geo_qc avgMP1m step)
+    const mpStats = {};
+    for (const [k, d] of Object.entries(mpBySat)) {
+        const rms = (arr) => arr.length > 1 ? Math.sqrt(arr.map(v=>v*v).reduce((a,b)=>a+b,0)/(arr.length-1)) : 0;
+        const avg = (arr) => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0;
+        const a1 = avg(d.mp1), a2 = avg(d.mp2), amw = avg(d.mw);
+        const mp1f = d.mp1.map(v => v - a1);
+        const mp2f = d.mp2.map(v => v - a2);
+        mpStats[k] = {
+            sys: d.sys, prn: d.prn, sig1: d.sig1, sig2: d.sig2,
+            rmsMP1: rms(mp1f), rmsMP2: rms(mp2f),
+            avgMW: amw, rmsMW: rms(d.mw.map(v => v - amw)),
+            n: d.mp1.length
+        };
+    }
+
+    // --- Usable satellite count: L1/E1/B1/G1 with CNR >= 32 ---
+    // Signal sets for the primary (first) frequency of each constellation (RTCM 2-char codes)
+    const L1_SIGS = new Set(['1C']);                              // GPS L1CA only
+    const G1_SIGS = new Set(['1C','1P']);                         // GLO G1
+    const E1_SIGS = new Set(['1C','1A','1B','1X','1Z']);          // GAL E1
+    const B1_SIGS = new Set(['2I','2Q','2X','1D','1P','1X']);     // BDS B1I + B1C
+    function isL1Sig(sys, sigName) {
+        if (sys === 'GPS') return L1_SIGS.has(sigName);
+        if (sys === 'GLO') return G1_SIGS.has(sigName);
+        if (sys === 'GAL') return E1_SIGS.has(sigName);
+        if (sys === 'BDS') return B1_SIGS.has(sigName);
+        return false;
+    }
+    const SNR_THRESH = 32;
+    const snrCounts = []; // { tow, total, GPS, GLO, GAL, BDS }
+    for (const ep of epochs) {
+        const good = { GPS: new Set(), GLO: new Set(), GAL: new Set(), BDS: new Set() };
+        for (const sg of ep.signals) {
+            if (good[sg.sys] !== undefined && isL1Sig(sg.sys, sg.sigName) && sg.cnr >= SNR_THRESH) {
+                good[sg.sys].add(sg.prn);
+            }
+        }
+        const total = good.GPS.size + good.GLO.size + good.GAL.size + good.BDS.size;
+        snrCounts.push({ tow: ep.tow, total, GPS: good.GPS.size, GLO: good.GLO.size, GAL: good.GAL.size, BDS: good.BDS.size });
+    }
+
+    return {
+        nEpochs: epochs.length,
+        expectedEpochs,
+        sampleInterval,
+        dataRate,
+        t0, t1,
+        gaps,
+        intervals: intervalCounts,
+        sysAvgSats,
+        cnrBySys,
+        cnrAvgBySat,
+        obsBySat,
+        slipBySat,
+        mpStats,
+        snrCounts
+    };
+}
+
+// ==========================================================================
+// Rendering helpers
+// ==========================================================================
+const SYS_COLOR = { GPS:'#3b82f6', GLO:'#f59e0b', GAL:'#10b981', BDS:'#ef4444', QZS:'#ec4899', SBS:'#8b5cf6', IRN:'#6366f1' };
+let charts = {};
+
+function destroyChart(id) {
+    if (charts[id]) { charts[id].destroy(); charts[id] = null; }
+}
+
+function makeChart(id, config) {
+    destroyChart(id);
+    const el = document.getElementById(id);
+    if (!el) return;
+    charts[id] = new Chart(el.getContext('2d'), config);
+    return charts[id];
+}
+
+const darkPlugins = {
+    legend: { labels: { color: '#9ca3af', font: { size: 11 } } },
+    tooltip: { backgroundColor: 'rgba(17,24,39,0.95)', titleColor:'#f3f4f6', bodyColor:'#9ca3af', borderColor:'rgba(255,255,255,0.1)', borderWidth:1 }
+};
+
+function darkScales(xLabel, yLabel) {
+    return {
+        x: { grid:{color:'rgba(255,255,255,0.05)'}, ticks:{color:'#9ca3af',font:{size:10}}, title:{display:!!xLabel,text:xLabel,color:'#9ca3af'} },
+        y: { grid:{color:'rgba(255,255,255,0.05)'}, ticks:{color:'#9ca3af',font:{size:10}}, title:{display:!!yLabel,text:yLabel,color:'#9ca3af'} }
+    };
+}
+
+function formatTOW(tow) {
+    const s = tow % 86400;
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = Math.floor(s%60);
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+
+function formatBytes(b) {
+    if (b > 1e6) return (b/1e6).toFixed(2)+' MB';
+    if (b > 1e3) return (b/1e3).toFixed(1)+' KB';
+    return b+' B';
+}
+
+// ==========================================================================
+// Render overview
+// ==========================================================================
+function renderOverview(primary, stats, ephResult) {
+    const crcRate = primary.totalMsg > 0 ? primary.crcFail / (primary.totalMsg + primary.crcFail) * 100 : 0;
+    const crcClass = crcRate < 0.1 ? 'good' : crcRate < 1 ? 'warn' : 'bad';
+    const drClass = stats.dataRate > 98 ? 'good' : stats.dataRate > 90 ? 'warn' : 'bad';
+
+    document.getElementById('stat-overview').innerHTML = `
+        <div class="stat-card"><div class="stat-title">File Size</div><div class="stat-value info">${formatBytes(primary.totalBytes)}</div></div>
+        <div class="stat-card"><div class="stat-title">Total Messages</div><div class="stat-value info">${primary.totalMsg.toLocaleString()}</div></div>
+        <div class="stat-card"><div class="stat-title">CRC Failures</div><div class="stat-value ${crcClass}">${primary.crcFail} <span style="font-size:.9rem">(${crcRate.toFixed(2)}%)</span></div></div>
+        <div class="stat-card"><div class="stat-title">Epochs Observed</div><div class="stat-value info">${stats.nEpochs.toLocaleString()}</div></div>
+        <div class="stat-card"><div class="stat-title">Data Availability</div><div class="stat-value ${drClass}">${stats.dataRate.toFixed(1)}%</div><div class="stat-sub">${stats.nEpochs} / ${stats.expectedEpochs} expected</div></div>
+        <div class="stat-card"><div class="stat-title">Sample Interval</div><div class="stat-value info">${stats.sampleInterval}s</div></div>
+        <div class="stat-card"><div class="stat-title">Start Time (TOW)</div><div class="stat-value info" style="font-size:1.2rem">${formatTOW(stats.t0)}</div></div>
+        <div class="stat-card"><div class="stat-title">End Time (TOW)</div><div class="stat-value info" style="font-size:1.2rem">${formatTOW(stats.t1)}</div></div>
+        <div class="stat-card"><div class="stat-title">Data Gaps</div><div class="stat-value ${stats.gaps.length > 0 ? 'warn' : 'good'}">${stats.gaps.length}</div></div>
+    `;
+
+    // Message count chart
+    const msgTypes = Object.keys(primary.msgCount).sort((a,b)=>b-a);
+    const msgColors = msgTypes.map(t => {
+        const sys = getMsgSys(parseInt(t));
+        return sys ? (SYS_COLOR[sys] || '#6b7280') : '#6b7280';
+    });
+    makeChart('chart-msgcount', {
+        type: 'bar',
+        data: { labels: msgTypes, datasets: [{ label: 'Count', data: msgTypes.map(t=>primary.msgCount[t]), backgroundColor: msgColors, borderRadius: 4 }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: {
+            x: { grid:{color:'rgba(255,255,255,0.05)'}, ticks:{color:'#9ca3af'} },
+            y: { grid:{color:'rgba(255,255,255,0.05)'}, ticks:{color:'#9ca3af', font:{size: msgTypes.length > 20 ? 8 : 10}} }
+        }}
+    });
+
+    // System satellite count chart
+    const sysKeys = Object.keys(stats.sysAvgSats);
+    makeChart('chart-syscount', {
+        type: 'bar',
+        data: { labels: sysKeys, datasets: [{ label: 'Avg Sats/Epoch', data: sysKeys.map(s=>stats.sysAvgSats[s].toFixed(1)), backgroundColor: sysKeys.map(s=>SYS_COLOR[s]||'#6b7280'), borderRadius: 6 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: darkScales('System','Avg Satellites') }
+    });
+
+    // Station info
+    if (primary.stationPos || primary.stationInfo) {
+        document.getElementById('card-station').style.display = 'block';
+        let html = '<div style="display:flex;gap:24px;flex-wrap:wrap">';
+        if (primary.stationPos) {
+            const [lat, lon, ht] = ecef2llh(primary.stationPos.xyz);
+            html += `<div><div class="stat-title" style="margin-bottom:4px">Station ID</div><div style="font-size:1.1rem;font-weight:700">${primary.stationPos.staid}</div></div>
+            <div><div class="stat-title" style="margin-bottom:4px">Position (ECEF m)</div><div style="font-family:monospace;font-size:.8rem">${primary.stationPos.xyz.map(v=>v.toFixed(4)).join(', ')}</div></div>
+            <div><div class="stat-title" style="margin-bottom:4px">Geodetic</div><div style="font-family:monospace;font-size:.8rem">${lat.toFixed(7)}°, ${lon.toFixed(7)}°, ${ht.toFixed(3)}m</div></div>`;
+        }
+        if (primary.stationInfo) {
+            const si = primary.stationInfo;
+            html += `<div><div class="stat-title" style="margin-bottom:4px">Receiver</div><div style="font-family:monospace;font-size:.8rem">${si.recType} / ${si.recFw}</div></div>
+            <div><div class="stat-title" style="margin-bottom:4px">Antenna</div><div style="font-family:monospace;font-size:.8rem">${si.antDes}</div></div>`;
+        }
+        html += '</div>';
+        document.getElementById('station-info').innerHTML = html;
+    }
+
+    // Ephemeris
+    const ephSrc = ephResult || primary;
+    if (Object.keys(ephSrc.eph).length > 0) {
+        document.getElementById('card-eph-overview').style.display = 'block';
+        let html = '<div style="display:flex;gap:16px;flex-wrap:wrap">';
+        for (const [sys, prnMap] of Object.entries(ephSrc.eph)) {
+            const nPrn = Object.keys(prnMap).length;
+            const total = Object.values(prnMap).reduce((a,b)=>a+b,0);
+            html += `<div class="stat-card" style="min-width:100px"><div class="stat-title">${sys}</div><div class="stat-value" style="font-size:1.3rem;color:${SYS_COLOR[sys]||'#6b7280'}">${nPrn}</div><div class="stat-sub">${total} nav msgs</div></div>`;
+        }
+        html += '</div>';
+        document.getElementById('eph-overview-content').innerHTML = html;
+    }
+}
+
+// ==========================================================================
+// Render Signals tab
+// ==========================================================================
+let activeCNRSys = 'ALL';
+function renderSignals(primary, stats) {
+    const systems = Object.keys(stats.cnrBySys);
+
+    // Stats cards
+    let allCNR = Object.values(stats.cnrBySys).flat();
+    const avgCNR = allCNR.length ? allCNR.reduce((a,b)=>a+b,0)/allCNR.length : 0;
+    document.getElementById('stat-signals').innerHTML = `
+        <div class="stat-card"><div class="stat-title">Total Observations</div><div class="stat-value info">${primary.rawSignals.length.toLocaleString()}</div></div>
+        <div class="stat-card"><div class="stat-title">Avg CNR (all)</div><div class="stat-value good">${avgCNR.toFixed(1)} dBHz</div></div>
+        <div class="stat-card"><div class="stat-title">Active Systems</div><div class="stat-value info">${systems.length}</div></div>
+    `;
+
+    // System selector tabs
+    const tabsEl = document.getElementById('cnr-sys-tabs');
+    tabsEl.innerHTML = ['ALL', ...systems].map(s =>
+        `<button class="chart-tab ${s===activeCNRSys?'active':''}" onclick="setCNRSys('${s}')">${s}</button>`
+    ).join('');
+
+    drawCNRHist(stats);
+
+    // CNR vs Time (scatter by system, thin data)
+    const MAXPTS = 2000;
+    const step = Math.max(1, Math.floor(primary.rawSignals.length / MAXPTS));
+    const cnrTimeDs = {};
+    primary.rawSignals.filter((_,i)=>i%step===0).forEach(sg => {
+        if (!cnrTimeDs[sg.sys]) cnrTimeDs[sg.sys] = { label: sg.sys, data: [], backgroundColor: (SYS_COLOR[sg.sys]||'#6b7280')+'88', pointRadius: 1.5, showLine: false };
+        cnrTimeDs[sg.sys].data.push({ x: sg.tow, y: sg.cnr });
+    });
+
+    makeChart('chart-cnr-time', {
+        type: 'scatter',
+        data: { datasets: Object.values(cnrTimeDs) },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: { ...darkScales().x, title:{display:true,text:'TOW (s)',color:'#9ca3af'} },
+                      y: { ...darkScales().y, min:0, max:60, title:{display:true,text:'CNR (dBHz)',color:'#9ca3af'} } } }
+    });
+
+    // Signal count bar
+    const sigMap = {};
+    for (const sg of primary.rawSignals) {
+        const k = `${sg.sys}-${sg.sigName}`;
+        sigMap[k] = (sigMap[k] || 0) + 1;
+    }
+    const sigKeys = Object.keys(sigMap).sort();
+    makeChart('chart-sig-count', {
+        type: 'bar',
+        data: { labels: sigKeys, datasets: [{ label: 'Obs Count', data: sigKeys.map(k=>sigMap[k]), backgroundColor: sigKeys.map(k=>SYS_COLOR[k.split('-')[0]]||'#6b7280')+'cc', borderRadius: 3 }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: darkScales().x, y: { ...darkScales().y, ticks:{color:'#9ca3af',font:{size:9}} } } }
+    });
+
+    // Signal table
+    const sysSignals = {};
+    for (const sg of primary.rawSignals) {
+        if (!sysSignals[sg.sys]) sysSignals[sg.sys] = {};
+        if (!sysSignals[sg.sys][sg.sigName]) sysSignals[sg.sys][sg.sigName] = { count: 0, cnrSum: 0, cnrN: 0 };
+        sysSignals[sg.sys][sg.sigName].count++;
+        if (sg.cnr > 0) { sysSignals[sg.sys][sg.sigName].cnrSum += sg.cnr; sysSignals[sg.sys][sg.sigName].cnrN++; }
+    }
+    let tableHtml = '<table class="tbl"><thead><tr><th>System</th><th>Signal</th><th>Observations</th><th>Avg CNR (dBHz)</th></tr></thead><tbody>';
+    for (const [sys, sigs] of Object.entries(sysSignals)) {
+        for (const [sig, d] of Object.entries(sigs)) {
+            const avg = d.cnrN > 0 ? (d.cnrSum/d.cnrN).toFixed(1) : '-';
+            tableHtml += `<tr><td><span class="sys-badge sys-${sys}">${sys}</span></td><td>${sig}</td><td>${d.count.toLocaleString()}</td><td>${avg}</td></tr>`;
+        }
+    }
+    tableHtml += '</tbody></table>';
+    document.getElementById('signal-table').innerHTML = tableHtml;
+}
+
+function setCNRSys(sys) {
+    activeCNRSys = sys;
+    document.querySelectorAll('#cnr-sys-tabs .chart-tab').forEach(b => {
+        b.classList.toggle('active', b.textContent === sys);
+    });
+    if (gPrimary && gStats) drawCNRHist(gStats);
+}
+
+function drawCNRHist(stats) {
+    const bins = Array.from({length: 50}, (_,i) => i + 10); // 10 to 59 dBHz
+    const systems = activeCNRSys === 'ALL' ? Object.keys(stats.cnrBySys) : [activeCNRSys];
+    const datasets = systems.map(sys => {
+        const cnrs = stats.cnrBySys[sys] || [];
+        const hist = new Array(50).fill(0);
+        for (const c of cnrs) {
+            const idx = Math.floor(c) - 10;
+            if (idx >= 0 && idx < 50) hist[idx]++;
+        }
+        return { label: sys, data: hist, backgroundColor: (SYS_COLOR[sys]||'#6b7280')+'aa', borderColor: SYS_COLOR[sys]||'#6b7280', borderWidth: 1, borderRadius: 2 };
+    });
+    makeChart('chart-cnr-hist', {
+        type: 'bar',
+        data: { labels: bins.map(b=>b+'dB'), datasets },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: { stacked: true, ...darkScales().x, title:{display:true,text:'CNR (dBHz)',color:'#9ca3af'} },
+                      y: { stacked: true, ...darkScales().y, title:{display:true,text:'Count',color:'#9ca3af'} } } }
+    });
+}
+
+// ==========================================================================
+// Render Satellites tab
+// ==========================================================================
+let activeSatSys = 'ALL';
+function renderSatellites(primary, stats) {
+    const systems = Object.keys(stats.sysAvgSats);
+    const tabs = document.getElementById('satcount-tabs');
+    tabs.innerHTML = ['ALL', ...systems].map(s =>
+        `<button class="chart-tab ${s===activeSatSys?'active':''}" onclick="setSatSys('${s}')">${s}</button>`
+    ).join('');
+    drawSatCountChart(primary, stats);
+    drawSnrSatCountChart(stats);
+
+    // Obs per satellite
+    const satKeys = Object.keys(stats.obsBySat).sort();
+    const obsColors = satKeys.map(k => SYS_COLOR[k.split('-')[0]]||'#6b7280');
+    makeChart('chart-obs-per-sat', {
+        type: 'bar',
+        data: { labels: satKeys.map(k=>k.replace('-','')), datasets: [{ label: 'Observations', data: satKeys.map(k=>stats.obsBySat[k]), backgroundColor: obsColors.map(c=>c+'cc'), borderRadius: 3 }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: darkScales().x, y: { ...darkScales().y, ticks:{color:'#9ca3af',font:{size: satKeys.length>40?8:10}} } } }
+    });
+
+    // Avg CNR per satellite
+    const cnrKeys = Object.keys(stats.cnrAvgBySat).sort();
+    const cnrColors = cnrKeys.map(k => SYS_COLOR[k.split('-')[0]]||'#6b7280');
+    makeChart('chart-cnr-per-sat', {
+        type: 'bar',
+        data: { labels: cnrKeys.map(k=>k.replace('-','')), datasets: [{ label: 'Avg CNR (dBHz)', data: cnrKeys.map(k=>stats.cnrAvgBySat[k].toFixed(1)), backgroundColor: cnrColors.map(c=>c+'cc'), borderRadius: 3 }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: { ...darkScales().x, min:0, max:60 }, y: { ...darkScales().y, ticks:{color:'#9ca3af',font:{size: cnrKeys.length>40?8:10}} } } }
+    });
+
+    // Cycle slips
+    const slipKeys = Object.keys(stats.slipBySat).filter(k=>stats.slipBySat[k]>0).sort();
+    const slipColors = slipKeys.map(k=>SYS_COLOR[k.split('-')[0]]||'#6b7280');
+    makeChart('chart-slips', {
+        type: 'bar',
+        data: { labels: slipKeys.length ? slipKeys.map(k=>k.replace('-','')) : ['(none)'],
+                datasets: [{ label: 'Cycle Slips', data: slipKeys.length ? slipKeys.map(k=>stats.slipBySat[k]) : [0], backgroundColor: slipColors.length ? slipColors.map(c=>c+'cc') : ['#6b7280'], borderRadius: 4 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: darkScales('Satellite','Slips') }
+    });
+}
+
+function setSatSys(sys) {
+    activeSatSys = sys;
+    document.querySelectorAll('#satcount-tabs .chart-tab').forEach(b => b.classList.toggle('active', b.textContent===sys));
+    if (gPrimary && gStats) drawSatCountChart(gPrimary, gStats);
+}
+
+function drawSatCountChart(primary, stats) {
+    const epochs = primary.epochs;
+    const MAXE = 2000;
+    const step = Math.max(1, Math.floor(epochs.length / MAXE));
+    const sampled = epochs.filter((_,i) => i % step === 0);
+    const labels = sampled.map(e => formatTOW(e.tow));
+
+    let datasets;
+    if (activeSatSys === 'ALL') {
+        const sysSet = new Set();
+        for (const e of sampled) for (const s of Object.keys(e.systems)) sysSet.add(s);
+        datasets = [...sysSet].map(sys => ({
+            label: sys,
+            data: sampled.map(e => (e.systems[sys] || []).length),
+            borderColor: SYS_COLOR[sys]||'#6b7280',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0
+        }));
+    } else {
+        datasets = [{ label: activeSatSys, data: sampled.map(e=>(e.systems[activeSatSys]||[]).length), borderColor: SYS_COLOR[activeSatSys]||'#6b7280', backgroundColor: (SYS_COLOR[activeSatSys]||'#6b7280')+'22', fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0 }];
+    }
+
+    makeChart('chart-satcount-time', {
+        type: 'line',
+        data: { labels, datasets },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: { ...darkScales().x, ticks: { color:'#9ca3af', maxTicksLimit:10, font:{size:10} } },
+                      y: { ...darkScales().y, min:0, title:{display:true,text:'# Satellites',color:'#9ca3af'} } } }
+    });
+}
+
+function drawSnrSatCountChart(stats) {
+    const sc = stats.snrCounts;
+    if (!sc || sc.length === 0) return;
+    const MAXE = 2000;
+    const step = Math.max(1, Math.floor(sc.length / MAXE));
+    const sampled = sc.filter((_, i) => i % step === 0);
+    const labels = sampled.map(e => formatTOW(e.tow));
+    const SYSS = ['GPS', 'GLO', 'GAL', 'BDS'];
+    const datasets = SYSS.map(sys => ({
+        label: sys,
+        data: sampled.map(e => e[sys]),
+        borderColor: SYS_COLOR[sys] || '#6b7280',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0
+    }));
+    datasets.push({
+        label: 'Total',
+        data: sampled.map(e => e.total),
+        borderColor: '#ffffff',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0,
+        borderDash: [4, 2]
+    });
+    makeChart('chart-snr-satcount', {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { ...darkPlugins, legend: { ...darkPlugins.legend, display: true } },
+            scales: {
+                x: { ...darkScales().x, ticks: { color: '#9ca3af', maxTicksLimit: 10, font: { size: 10 } } },
+                y: { ...darkScales().y, min: 0, title: { display: true, text: '# Satellites', color: '#9ca3af' } }
+            }
+        }
+    });
+}
+
+// ==========================================================================
+// Render Timeline tab
+// ==========================================================================
+function renderTimeline(primary, stats) {
+    const epochs = primary.epochs;
+
+    // Availability: bar chart where each bar = 1 minute, value = fraction of epochs present
+    const MIN_SECS = 60;
+    const tStart = stats.t0, tEnd = stats.t1;
+    const nBins = Math.max(1, Math.ceil((tEnd - tStart) / MIN_SECS));
+    const MAXBINS = 300;
+    const binSec = nBins > MAXBINS ? Math.ceil((tEnd-tStart)/MAXBINS) : MIN_SECS;
+    const actualBins = Math.ceil((tEnd - tStart) / binSec) + 1;
+    const binPresent = new Array(actualBins).fill(0);
+    const binTotal = new Array(actualBins).fill(0);
+
+    for (const ep of epochs) {
+        const idx = Math.floor((ep.tow - tStart) / binSec);
+        if (idx >= 0 && idx < actualBins) {
+            binPresent[idx]++;
+            binTotal[idx] = Math.max(binTotal[idx], 1);
+        }
+    }
+    const expectedPerBin = Math.max(1, Math.round(binSec / stats.sampleInterval));
+    const availPct = binPresent.map(v => Math.min(100, v / expectedPerBin * 100));
+    const binLabels = binPresent.map((_, i) => formatTOW(tStart + i * binSec));
+
+    makeChart('chart-avail', {
+        type: 'bar',
+        data: {
+            labels: binLabels,
+            datasets: [{
+                label: 'Data Availability (%)',
+                data: availPct,
+                backgroundColor: availPct.map(v => v > 95 ? '#10b98199' : v > 80 ? '#f59e0b99' : '#ef444499'),
+                borderRadius: 2
+            }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins,
+            scales: { x: { ...darkScales().x, ticks:{color:'#9ca3af',maxTicksLimit:20,font:{size:9}} },
+                      y: { ...darkScales().y, min:0, max:100, title:{display:true,text:'Availability (%)',color:'#9ca3af'} } } }
+    });
+
+    // Interval distribution
+    const intervals = stats.intervals;
+    const ivKeys = Object.keys(intervals).sort((a,b)=>+a-+b).slice(0, 30);
+    makeChart('chart-dt-dist', {
+        type: 'bar',
+        data: { labels: ivKeys.map(v=>v+'s'), datasets: [{ label: 'Count', data: ivKeys.map(v=>intervals[v]), backgroundColor: ivKeys.map(v => +v === stats.sampleInterval ? '#3b82f6' : '#6b7280')+'aa', borderRadius: 3 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: darkScales('Interval','Count') }
+    });
+
+    // Gaps list
+    const gapEl = document.getElementById('gap-list');
+    if (stats.gaps.length === 0) {
+        gapEl.innerHTML = '<div style="color:#10b981;padding:12px">No data gaps detected.</div>';
+    } else {
+        gapEl.innerHTML = stats.gaps.map(g =>
+            `<div class="gap-item">
+                <strong>${formatTOW(g.tow)}</strong> → Gap: <strong>${g.dt.toFixed(1)}s</strong>
+                (~${g.missed} missed epoch${g.missed!==1?'s':''})
+            </div>`
+        ).join('');
+    }
+}
+
+// ==========================================================================
+// Render Multipath tab
+// ==========================================================================
+function renderMultipath(stats) {
+    const mp = stats.mpStats;
+    const mpKeys = Object.keys(mp).sort();
+
+    // For charts: pick best (highest-n) pair per satellite to avoid duplicate bars
+    const bestPerSat = {};
+    for (const k of mpKeys) {
+        const d = mp[k];
+        const satId = `${d.sys}-${String(d.prn).padStart(2,'0')}`;
+        if (!bestPerSat[satId] || mp[bestPerSat[satId]].n < d.n) bestPerSat[satId] = k;
+    }
+    const chartKeys = Object.values(bestPerSat).sort();
+
+    // Label: "G01" style for charts, full pair for table
+    const chartLabel = k => {
+        const d = mp[k];
+        return `${d.sys}${String(d.prn).padStart(2,'0')}`;
+    };
+
+    const overallMP1 = mpKeys.length ? mpKeys.reduce((a,k)=>a+(mp[k].rmsMP1*mp[k].n),0) / mpKeys.reduce((a,k)=>a+mp[k].n,0) : 0;
+    const overallMP2 = mpKeys.length ? mpKeys.reduce((a,k)=>a+(mp[k].rmsMP2*mp[k].n),0) / mpKeys.reduce((a,k)=>a+mp[k].n,0) : 0;
+    const nSats = chartKeys.length;
+
+    document.getElementById('stat-mp').innerHTML = mpKeys.length > 0 ? `
+        <div class="stat-card"><div class="stat-title">Sat/Pair Combos</div><div class="stat-value info">${mpKeys.length}</div></div>
+        <div class="stat-card"><div class="stat-title">Overall MP1 RMS</div><div class="stat-value ${overallMP1<0.3?'good':overallMP1<0.6?'warn':'bad'}">${overallMP1.toFixed(3)} m</div></div>
+        <div class="stat-card"><div class="stat-title">Overall MP2 RMS</div><div class="stat-value ${overallMP2<0.4?'good':overallMP2<0.8?'warn':'bad'}">${overallMP2.toFixed(3)} m</div></div>
+    ` : '<div class="stat-card"><div class="stat-title">Multipath</div><div class="stat-value warn">Need dual-freq</div></div>';
+
+    const chartColors = chartKeys.map(k => SYS_COLOR[mp[k].sys]||'#6b7280');
+    const fontSize = chartKeys.length > 40 ? 8 : 10;
+    makeChart('chart-mp1', {
+        type: 'bar',
+        data: { labels: chartKeys.map(chartLabel), datasets: [{ label: 'MP1 RMS (m)', data: chartKeys.map(k=>mp[k].rmsMP1.toFixed(4)), backgroundColor: chartColors.map(c=>c+'cc'), borderRadius: 3 }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: { x: {...darkScales().x,min:0}, y:{...darkScales().y,ticks:{font:{size:fontSize}}} } }
+    });
+
+    makeChart('chart-mp2', {
+        type: 'bar',
+        data: { labels: chartKeys.map(chartLabel), datasets: [{ label: 'MP2 RMS (m)', data: chartKeys.map(k=>mp[k].rmsMP2.toFixed(4)), backgroundColor: chartColors.map(c=>c+'cc'), borderRadius: 3 }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: { x: {...darkScales().x,min:0}, y:{...darkScales().y,ticks:{font:{size:fontSize}}} } }
+    });
+
+    makeChart('chart-mw', {
+        type: 'bar',
+        data: { labels: chartKeys.map(chartLabel), datasets: [{ label: 'MW RMS (cycles)', data: chartKeys.map(k=>mp[k].rmsMW.toFixed(3)), backgroundColor: chartColors.map(c=>c+'88'), borderRadius: 3 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: darkPlugins, scales: darkScales('Satellite','MW RMS (cycles)') }
+    });
+
+    // MP table — all pairs, grouped by sys+prn
+    let html = '<table class="tbl"><thead><tr><th>Satellite</th><th>Sig1</th><th>Sig2</th><th>MP1 RMS (m)</th><th>MP2 RMS (m)</th><th>MW Avg (cyc)</th><th>MW RMS (cyc)</th><th>N</th></tr></thead><tbody>';
+    for (const k of mpKeys) {
+        const d = mp[k];
+        const mp1cls = d.rmsMP1<0.3?'good':d.rmsMP1<0.6?'warn':'bad';
+        const mp2cls = d.rmsMP2<0.4?'good':d.rmsMP2<0.8?'warn':'bad';
+        html += `<tr><td><span class="sys-badge sys-${d.sys}">${d.sys}</span> ${String(d.prn).padStart(2,'0')}</td>
+            <td style="font-family:monospace">${d.sig1}</td><td style="font-family:monospace">${d.sig2}</td>
+            <td class="${mp1cls}">${d.rmsMP1.toFixed(4)}</td><td class="${mp2cls}">${d.rmsMP2.toFixed(4)}</td>
+            <td>${d.avgMW.toFixed(3)}</td><td>${d.rmsMW.toFixed(3)}</td><td>${d.n}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    if (mpKeys.length === 0) html = '<div style="color:#9ca3af;padding:12px">Multipath estimation requires dual-frequency observations (P and L on two frequencies per satellite).</div>';
+    document.getElementById('mp-table').innerHTML = html;
+}
+
+// ==========================================================================
+// Render Messages tab
+// ==========================================================================
+function renderMessages(primary) {
+    // Message table
+    const msgTypes = Object.keys(primary.msgCount).map(Number).sort((a,b)=>a-b);
+    let html = '<table class="tbl"><thead><tr><th>Type</th><th>Description</th><th>Count</th><th>System</th></tr></thead><tbody>';
+    const MSG_DESC = {
+        1005:'Station Ref (ECEF)',1006:'Station Ref + Antenna Ht',1007:'Antenna Descriptor',
+        1008:'Antenna & Serial',1029:'Unicode Text String',1033:'Rcvr & Ant Descriptor',
+        1230:'GLO Code-Phase Bias',1019:'GPS Broadcast Ephemeris',1020:'GLONASS Ephemeris',
+        1041:'NavIC Ephemeris',1042:'BDS Ephemeris',1044:'QZSS Ephemeris',
+        1045:'Galileo F/NAV',1046:'Galileo I/NAV',4054:'Trimble Proprietary'
+    };
+    for (let t = 1071; t <= 1137; t++) {
+        const sys = getMsgSys(t);
+        const lv = getMsmLevel(t);
+        if (sys && lv >= 1) MSG_DESC[t] = `${sys} MSM${lv}`;
+    }
+    for (const type of msgTypes) {
+        const sys = getMsgSys(type);
+        html += `<tr>
+            <td style="font-family:monospace;font-weight:700">${type}</td>
+            <td>${MSG_DESC[type] || 'Proprietary/Unknown'}</td>
+            <td>${primary.msgCount[type].toLocaleString()}</td>
+            <td>${sys ? `<span class="sys-badge sys-${sys}">${sys}</span>` : '—'}</td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    document.getElementById('msg-table').innerHTML = html;
+
+    // CRC
+    const total = primary.totalMsg + primary.crcFail;
+    const rate = total > 0 ? (primary.crcFail / total * 100).toFixed(3) : '0.000';
+    const cls = parseFloat(rate) < 0.1 ? 'good' : parseFloat(rate) < 1 ? 'warn' : 'bad';
+    document.getElementById('crc-info').innerHTML = `
+        <div style="font-size:2rem;font-weight:700;font-family:'Outfit',sans-serif" class="${cls}">${primary.crcFail}</div>
+        <div style="color:var(--muted);margin-top:4px">CRC failures (${rate}% of ${total.toLocaleString()} frames)</div>
+        <div class="progress-bar-wrap" style="margin-top:12px"><div class="progress-bar" style="width:${Math.min(100,parseFloat(rate)*10)}%;background:${parseFloat(rate)<0.1?'#10b981':parseFloat(rate)<1?'#f59e0b':'#ef4444'}"></div></div>
+        <div style="color:var(--muted);font-size:.78rem;margin-top:6px">Threshold: &lt;0.1% excellent, &lt;1% acceptable</div>
+    `;
+
+    // Special messages
+    let specHtml = '';
+    if (primary.stationPos) {
+        const s = primary.stationPos;
+        specHtml += `<div class="info-item"><strong>1005/1006</strong> StaID=${s.staid} XYZ=[${s.xyz.map(v=>v.toFixed(2)).join(', ')}]</div>`;
+    }
+    if (primary.stationInfo) {
+        const si = primary.stationInfo;
+        specHtml += `<div class="info-item"><strong>1033</strong> Rec: ${si.recType} ${si.recFw} / Ant: ${si.antDes}</div>`;
+    }
+    for (const [type, sys] of Object.entries(EPH_TYPES)) {
+        if (primary.msgCount[+type]) specHtml += `<div class="info-item"><strong>${type}</strong> ${sys} Ephemeris: ${primary.msgCount[+type]} msgs</div>`;
+    }
+    if (!specHtml) specHtml = '<div style="color:var(--muted);padding:8px">No special messages found.</div>';
+    document.getElementById('special-msg').innerHTML = specHtml;
+}
+
+// ==========================================================================
+// Main rendering
+// ==========================================================================
+let gPrimary = null, gEph = null, gStats = null;
+let currentTab = 'overview';
+
+function renderAll() {
+    if (!gPrimary) return;
+    gStats = computeStats(gPrimary, gEph);
+    document.getElementById('tabs-container').style.display = 'flex';
+
+    renderOverview(gPrimary, gStats, gEph);
+    if (currentTab !== 'overview') {
+        renderTabContent(currentTab);
+    }
+}
+
+function renderTabContent(tab) {
+    if (!gPrimary || !gStats) return;
+    switch(tab) {
+        case 'signals':    renderSignals(gPrimary, gStats); break;
+        case 'satellites': renderSatellites(gPrimary, gStats); break;
+        case 'timeline':   renderTimeline(gPrimary, gStats); break;
+        case 'multipath':  renderMultipath(gStats); break;
+        case 'messages':   renderMessages(gPrimary); break;
+    }
+}
+
+function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    const idx = ['overview','signals','satellites','timeline','multipath','messages'].indexOf(tab);
+    document.querySelectorAll('.tab-btn')[idx]?.classList.add('active');
+    document.getElementById('tab-' + tab)?.classList.add('active');
+    if (tab !== 'overview') renderTabContent(tab);
+}
+
+// ==========================================================================
+// File drop handling
+// ==========================================================================
+function setupDrop(zoneId, fnameId, isEph) {
+    const zone = document.getElementById(zoneId);
+    ['dragenter','dragover'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('hover'); }));
+    ['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('hover'); }));
+    zone.addEventListener('drop', ev => {
+        const files = Array.from(ev.dataTransfer.files);
+        if (files.length > 0) loadFile(files[0], fnameId, isEph);
+    });
+    zone.addEventListener('click', () => {
+        const inp = document.createElement('input');
+        inp.type = 'file'; inp.accept = '.rtcm,.bin,.raw,.ubx,*';
+        inp.onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0], fnameId, isEph); };
+        inp.click();
+    });
+}
+
+function loadFile(file, fnameId, isEph) {
+    document.getElementById(fnameId).textContent = `⏳ Parsing ${file.name} (${formatBytes(file.size)})…`;
+    const reader = new FileReader();
+    reader.onload = e => {
+        let result;
+        try { result = parseRTCM(e.target.result, isEph); } catch(err) {
+            document.getElementById(fnameId).textContent = '❌ Parse error: ' + err.message;
+            return;
+        }
+        document.getElementById(fnameId).textContent = `✓ ${file.name} — ${result.totalMsg} msgs, ${result.epochs.length} obs epochs`;
+        document.getElementById(isEph ? 'drop-eph' : 'drop-primary').classList.add('loaded');
+
+        if (isEph) { gEph = result; }
+        else { gPrimary = result; }
+
+        renderAll();
+        switchTab('overview');
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+setupDrop('drop-primary', 'primary-fname', false);
+setupDrop('drop-eph', 'eph-fname', true);
+</script>
+</body>
+</html>

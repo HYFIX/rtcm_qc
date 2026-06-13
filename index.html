@@ -184,7 +184,16 @@
             <input type="checkbox" id="show-labels" style="width: 16px; height: 16px; cursor: pointer; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.2);" onchange="renderAll()">
             <label for="show-labels" style="font-weight: 600; font-size: 0.9rem; cursor: pointer;">Show Sat Labels</label>
         </div>
-        <button id="btn-csv-export" class="action-btn" style="margin-left: auto; padding: 6px 16px; font-size: 0.9rem; background: #3b82f6; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; border: none; display: none;" onclick="exportCSV()">Export Skyplot Data (CSV)</button>
+        <div style="display: flex; align-items: center; gap: 12px; margin-left: auto;">
+            <button id="btn-csv-export" class="action-btn" style="padding: 6px 16px; font-size: 0.9rem; background: #3b82f6; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; border: none; display: none;" onclick="exportCSV()">Export CSV</button>
+            <div id="rinex-container" style="display: none; align-items: center; gap: 8px;">
+                <select id="rinex-version" style="padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.2); color: #fff; font-size: 0.9rem; cursor: pointer;">
+                    <option value="3.04" selected>RINEX 3.04</option>
+                    <option value="2.11">RINEX 2.11</option>
+                </select>
+                <button id="btn-rinex-export" class="action-btn" style="padding: 6px 16px; font-size: 0.9rem; background: #10b981; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; border: none;" onclick="exportRinex()">Export RINEX</button>
+            </div>
+        </div>
     </div>
 
     <!-- Tabs -->
@@ -2915,6 +2924,393 @@ function exportCSV() {
 }
 
 // ==========================================================================
+// RINEX Exporter (RINEX 3.04 / 2.11)
+// ==========================================================================
+function rinexLine(data, label) {
+    return data.padEnd(60, ' ') + label.substring(0, 20).padEnd(20, ' ') + '\n';
+}
+
+function getSnrSsi(snr) {
+    if (snr <= 0) return ' ';
+    if (snr < 12.0) return '1';
+    if (snr < 18.0) return '2';
+    if (snr < 24.0) return '3';
+    if (snr < 30.0) return '4';
+    if (snr < 36.0) return '5';
+    if (snr < 42.0) return '6';
+    if (snr < 48.0) return '7';
+    if (snr < 54.0) return '8';
+    return '9';
+}
+
+function formatRinexValue(val, lli, ssi) {
+    if (val === undefined || val === null || val === 0 || isNaN(val)) {
+        return ' '.repeat(16);
+    }
+    const valStr = val.toFixed(3).padStart(14, ' ');
+    return valStr + lli + ssi;
+}
+
+function gpsToUtc(refWeek, tow) {
+    const totalMs = 315964800000 + (refWeek * 604800 + tow) * 1000 - 18000;
+    const d = new Date(totalMs);
+    return {
+        year: d.getUTCFullYear(),
+        month: d.getUTCMonth() + 1,
+        day: d.getUTCDate(),
+        hour: d.getUTCHours(),
+        minute: d.getUTCMinutes(),
+        second: d.getUTCSeconds() + d.getUTCMilliseconds() / 1000
+    };
+}
+
+function getObsCodes(sys, sigName, rinexVersion) {
+    if (rinexVersion === '3.04') {
+        return {
+            C: 'C' + sigName,
+            L: 'L' + sigName,
+            S: 'S' + sigName
+        };
+    } else {
+        const band = sigName[0];
+        let pCode = 'C' + band;
+        if ((sys === 'GPS' || sys === 'GLO') && (sigName.endsWith('P') || sigName.endsWith('W') || sigName.endsWith('Y'))) {
+            pCode = 'P' + band;
+        }
+        return {
+            C: pCode,
+            L: 'L' + band,
+            S: 'S' + band
+        };
+    }
+}
+
+function exportRinex() {
+    if (!gPrimary || !gPrimary.epochs || gPrimary.epochs.length === 0) {
+        alert("No primary observation data available to export.");
+        return;
+    }
+
+    const version = document.getElementById('rinex-version').value;
+    
+    // Resolve GPS week
+    let refWeek = -1;
+    try {
+        const dateEl = document.getElementById('approx-date');
+        const dateStr = (dateEl && dateEl.value) || getSystemDateString();
+        refWeek = dateToGpsWeek(dateStr);
+    } catch(e) {}
+    if (refWeek === -1) refWeek = 2416; // Fallback
+    
+    // Step 1: Scan all epochs to find unique signals per system
+    const sysSigs = { GPS: new Set(), GLO: new Set(), GAL: new Set(), BDS: new Set() };
+    for (const ep of gPrimary.epochs) {
+        for (const sg of ep.signals) {
+            if (sysSigs[sg.sys] !== undefined) {
+                sysSigs[sg.sys].add(sg.sigName);
+            }
+        }
+    }
+    
+    const systems = ['GPS', 'GLO', 'GAL', 'BDS'];
+    const rinexSysChar = { GPS: 'G', GLO: 'R', GAL: 'E', BDS: 'C' };
+    
+    let header = '';
+    let body = '';
+    
+    // Average station position
+    let rx = 0, ry = 0, rz = 0;
+    if (gStats && gStats.rxXYZ) {
+        [rx, ry, rz] = gStats.rxXYZ;
+    } else if (gPrimary.stationPos) {
+        [rx, ry, rz] = gPrimary.stationPos.xyz;
+    }
+    
+    // First / Last observation time
+    let t0 = gPrimary.epochs[0].tow;
+    let t1 = gPrimary.epochs[gPrimary.epochs.length - 1].tow;
+    const utc0 = gpsToUtc(refWeek, t0);
+    const utc1 = gpsToUtc(refWeek, t1);
+    
+    if (version === '3.04') {
+        header += rinexLine('     3.04           OBSERVATION DATA    M (MIXED)           ', 'RINEX VERSION / TYPE');
+        header += rinexLine('rtcm_qc_exporter    antigravity         ' + getSystemDateString().replace(/-/g,'') + ' UTC', 'PGM / RUN BY / DATE');
+        header += rinexLine('Client-side RTCM3 Quality Control Exporter                  ', 'COMMENT');
+        
+        const staName = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_STATION';
+        header += rinexLine(staName.substring(0, 60).padEnd(60, ' '), 'MARKER NAME');
+        header += rinexLine('0000'.padEnd(60, ' '), 'MARKER NUMBER');
+        header += rinexLine('QC_OBSERVER         QC_AGENCY                                   ', 'OBSERVER / AGENCY');
+        
+        const recType = gPrimary.stationInfo ? gPrimary.stationInfo.recType : 'QC_RECEIVER';
+        const recSno = gPrimary.stationInfo ? gPrimary.stationInfo.recSno : '000000';
+        header += rinexLine((recSno.padEnd(20, ' ') + recType.padEnd(20, ' ') + 'QC_VERS').padEnd(60, ' '), 'REC # / TYPE / VERS');
+        
+        const antDes = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_ANTENNA';
+        const antSno = gPrimary.stationInfo ? gPrimary.stationInfo.antSno : '000000';
+        header += rinexLine((antSno.padEnd(20, ' ') + antDes.padEnd(40, ' ')), 'ANT # / TYPE');
+        
+        header += rinexLine(`${rx.toFixed(4).padStart(14, ' ')}${ry.toFixed(4).padStart(14, ' ')}${rz.toFixed(4).padStart(14, ' ')}`, 'APPROX POSITION XYZ');
+        header += rinexLine('        0.0000        0.0000        0.0000                  ', 'ANTENNA: DELTA H/E/N');
+        
+        // SYS / # / OBS TYPES
+        for (const sys of systems) {
+            if (sysSigs[sys].size === 0) continue;
+            const sigs = [...sysSigs[sys]].sort();
+            const obsTypes = [];
+            for (const sig of sigs) {
+                const codes = getObsCodes(sys, sig, '3.04');
+                obsTypes.push(codes.C, codes.L, codes.S);
+            }
+            
+            let typeLine = `${rinexSysChar[sys]}  ${String(obsTypes.length).padStart(3, ' ')}`;
+            for (let i = 0; i < obsTypes.length; i++) {
+                if (i > 0 && i % 13 === 0) {
+                    header += rinexLine(typeLine, 'SYS / # / OBS TYPES');
+                    typeLine = '      ';
+                }
+                typeLine += ' ' + obsTypes[i];
+            }
+            header += rinexLine(typeLine, 'SYS / # / OBS TYPES');
+        }
+        
+        // Interval
+        const interval = gStats ? gStats.sampleInterval : 1.0;
+        header += rinexLine(`${interval.toFixed(4).padStart(10, ' ')}`, 'INTERVAL');
+        
+        // Time of first / last obs
+        header += rinexLine(`  ${utc0.year}    ${utc0.month}    ${utc0.day}    ${utc0.hour}    ${utc0.minute}   ${utc0.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF FIRST OBS');
+        header += rinexLine(`  ${utc1.year}    ${utc1.month}    ${utc1.day}    ${utc1.hour}    ${utc1.minute}   ${utc1.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF LAST OBS');
+        header += rinexLine('', 'END OF HEADER');
+        
+        // Write RINEX body
+        for (const ep of gPrimary.epochs) {
+            const utc = gpsToUtc(refWeek, ep.tow);
+            const satIds = [];
+            const satDataMap = {};
+            
+            for (const sg of ep.signals) {
+                if (sysSigs[sg.sys] === undefined || sysSigs[sg.sys].size === 0) continue;
+                const satId = `${rinexSysChar[sg.sys]}${String(sg.prn).padStart(2, '0')}`;
+                if (!satDataMap[satId]) {
+                    satDataMap[satId] = {};
+                    satIds.push(satId);
+                }
+                satDataMap[satId][sg.sigName] = {
+                    P: sg.P,
+                    L: sg.L,
+                    snr: sg.cnr,
+                    lockSec: sg.lockSec
+                };
+            }
+            
+            satIds.sort();
+            const numSats = satIds.length;
+            if (numSats === 0) continue;
+            
+            const pad3 = (n) => String(n).padStart(3, ' ');
+            const pad4 = (n) => String(n).padStart(4, ' ');
+            
+            body += `> ${pad4(utc.year)} ${String(utc.month).padStart(2, '0')} ${String(utc.day).padStart(2, '0')} ${String(utc.hour).padStart(2, '0')} ${String(utc.minute).padStart(2, '0')} ${utc.second.toFixed(7).padStart(11, ' ')}  0 ${pad3(numSats)}\n`;
+            
+            for (const satId of satIds) {
+                const sysChar = satId[0];
+                const sys = sysChar === 'G' ? 'GPS' : sysChar === 'R' ? 'GLO' : sysChar === 'E' ? 'GAL' : 'BDS';
+                const obsMap = satDataMap[satId];
+                
+                const sigs = [...sysSigs[sys]].sort();
+                
+                let satLine = satId;
+                for (const sig of sigs) {
+                    const codes = getObsCodes(sys, sig, '3.04');
+                    let pVal = 0, lVal = 0, sVal = 0;
+                    let lli = ' ';
+                    let ssi = ' ';
+                    
+                    if (obsMap && obsMap[sig]) {
+                        const data = obsMap[sig];
+                        pVal = data.P;
+                        lVal = data.L;
+                        sVal = data.snr;
+                        lli = (data.lockSec !== undefined && data.lockSec < 1.0) ? '1' : ' ';
+                        ssi = getSnrSsi(data.snr);
+                    }
+                    
+                    satLine += formatRinexValue(pVal, ' ', ' ');
+                    satLine += formatRinexValue(lVal, lli, ' ');
+                    satLine += formatRinexValue(sVal, ' ', ssi);
+                }
+                body += satLine + '\n';
+            }
+        }
+    } else {
+        // RINEX 2.11
+        header += rinexLine('     2.11           OBSERVATION DATA    M (MIXED)           ', 'RINEX VERSION / TYPE');
+        header += rinexLine('rtcm_qc_exporter    antigravity         ' + getSystemDateString().replace(/-/g,'') + ' UTC', 'PGM / RUN BY / DATE');
+        header += rinexLine('Client-side RTCM3 Quality Control Exporter                  ', 'COMMENT');
+        
+        const staName = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_STATION';
+        header += rinexLine(staName.substring(0, 60).padEnd(60, ' '), 'MARKER NAME');
+        header += rinexLine('0000'.padEnd(60, ' '), 'MARKER NUMBER');
+        header += rinexLine('QC_OBSERVER         QC_AGENCY                                   ', 'OBSERVER / AGENCY');
+        
+        const recType = gPrimary.stationInfo ? gPrimary.stationInfo.recType : 'QC_RECEIVER';
+        const recSno = gPrimary.stationInfo ? gPrimary.stationInfo.recSno : '000000';
+        header += rinexLine((recSno.padEnd(20, ' ') + recType.padEnd(20, ' ') + 'QC_VERS').padEnd(60, ' '), 'REC # / TYPE / VERS');
+        
+        const antDes = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_ANTENNA';
+        const antSno = gPrimary.stationInfo ? gPrimary.stationInfo.antSno : '000000';
+        header += rinexLine((antSno.padEnd(20, ' ') + antDes.padEnd(40, ' ')), 'ANT # / TYPE');
+        
+        header += rinexLine(`${rx.toFixed(4).padStart(14, ' ')}${ry.toFixed(4).padStart(14, ' ')}${rz.toFixed(4).padStart(14, ' ')}`, 'APPROX POSITION XYZ');
+        header += rinexLine('        0.0000        0.0000        0.0000                  ', 'ANTENNA: DELTA H/E/N');
+        
+        // Collect all global observation types for RINEX 2
+        const globalObsSet = new Set();
+        const r2Map = {}; // sys-r2Type -> sigName
+        
+        for (const sys of systems) {
+            const sigs = [...sysSigs[sys]].sort();
+            for (const sig of sigs) {
+                const codes = getObsCodes(sys, sig, '2.11');
+                globalObsSet.add(codes.C);
+                globalObsSet.add(codes.L);
+                globalObsSet.add(codes.S);
+                
+                r2Map[`${sys}-${codes.C}`] = sig;
+                r2Map[`${sys}-${codes.L}`] = sig;
+                r2Map[`${sys}-${codes.S}`] = sig;
+            }
+        }
+        
+        // Sort RINEX 2 observation types logically (by band and type)
+        const globalObsTypes = [...globalObsSet].sort((a, b) => {
+            const bandA = a[1], bandB = b[1];
+            if (bandA !== bandB) return bandA.localeCompare(bandB);
+            const typeA = a[0], typeB = b[0];
+            const order = { C: 1, P: 2, L: 3, S: 4 };
+            return (order[typeA] || 9) - (order[typeB] || 9);
+        });
+        
+        let typeLine = String(globalObsTypes.length).padStart(6, ' ');
+        for (let i = 0; i < globalObsTypes.length; i++) {
+            if (i > 0 && i % 9 === 0) {
+                header += rinexLine(typeLine, '# / TYPES OF OBSERV');
+                typeLine = '      ';
+            }
+            typeLine += globalObsTypes[i].padStart(6, ' ');
+        }
+        header += rinexLine(typeLine, '# / TYPES OF OBSERV');
+        
+        // Interval
+        const interval = gStats ? gStats.sampleInterval : 1.0;
+        header += rinexLine(`${interval.toFixed(4).padStart(10, ' ')}`, 'INTERVAL');
+        
+        // Time of first / last obs
+        header += rinexLine(`  ${utc0.year}    ${utc0.month}    ${utc0.day}    ${utc0.hour}    ${utc0.minute}   ${utc0.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF FIRST OBS');
+        header += rinexLine(`  ${utc1.year}    ${utc1.month}    ${utc1.day}    ${utc1.hour}    ${utc1.minute}   ${utc1.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF LAST OBS');
+        header += rinexLine('', 'END OF HEADER');
+        
+        // Write RINEX body
+        for (const ep of gPrimary.epochs) {
+            const utc = gpsToUtc(refWeek, ep.tow);
+            const satIds = [];
+            const satDataMap = {};
+            
+            for (const sg of ep.signals) {
+                if (sysSigs[sg.sys] === undefined || sysSigs[sg.sys].size === 0) continue;
+                const satId = `${rinexSysChar[sg.sys]}${String(sg.prn).padStart(2, '0')}`;
+                if (!satDataMap[satId]) {
+                    satDataMap[satId] = {};
+                    satIds.push(satId);
+                }
+                satDataMap[satId][sg.sigName] = {
+                    P: sg.P,
+                    L: sg.L,
+                    snr: sg.cnr,
+                    lockSec: sg.lockSec
+                };
+            }
+            
+            satIds.sort();
+            const numSats = satIds.length;
+            if (numSats === 0) continue;
+            
+            const pad3 = (n) => String(n).padStart(3, ' ');
+            
+            let epochLine = ` ${String(utc.year % 100).padStart(2, '0')}${pad3(utc.month)}${pad3(utc.day)}${pad3(utc.hour)}${pad3(utc.minute)}${utc.second.toFixed(7).padStart(11, ' ')}${pad3(0)}${pad3(numSats)}`;
+            for (let i = 0; i < Math.min(12, numSats); i++) {
+                epochLine += satIds[i];
+            }
+            epochLine += '\n';
+            
+            let satIndex = 12;
+            while (satIndex < numSats) {
+                let extraLine = ' '.repeat(32);
+                const chunkLimit = Math.min(satIndex + 12, numSats);
+                for (let i = satIndex; i < chunkLimit; i++) {
+                    extraLine += satIds[i];
+                }
+                extraLine += '\n';
+                epochLine += extraLine;
+                satIndex += 12;
+            }
+            body += epochLine;
+            
+            for (const satId of satIds) {
+                const sysChar = satId[0];
+                const sys = sysChar === 'G' ? 'GPS' : sysChar === 'R' ? 'GLO' : sysChar === 'E' ? 'GAL' : 'BDS';
+                const obsMap = satDataMap[satId];
+                
+                let satObs = '';
+                for (let i = 0; i < globalObsTypes.length; i++) {
+                    const r2Type = globalObsTypes[i];
+                    const sigName = r2Map[`${sys}-${r2Type}`];
+                    const typeChar = r2Type[0];
+                    
+                    let val = 0;
+                    let lli = ' ';
+                    let ssi = ' ';
+                    
+                    if (sigName && obsMap && obsMap[sigName]) {
+                        const data = obsMap[sigName];
+                        if (typeChar === 'C' || typeChar === 'P') {
+                            val = data.P;
+                        } else if (typeChar === 'L') {
+                            val = data.L;
+                            lli = (data.lockSec !== undefined && data.lockSec < 1.0) ? '1' : ' ';
+                        } else if (typeChar === 'S') {
+                            val = data.snr;
+                            ssi = getSnrSsi(data.snr);
+                        }
+                    }
+                    
+                    satObs += formatRinexValue(val, lli, ssi);
+                    if ((i + 1) % 5 === 0 || i === globalObsTypes.length - 1) {
+                        satObs += '\n';
+                    }
+                }
+                body += satObs;
+            }
+        }
+    }
+    
+    const rinexContent = header + body;
+    const blob = new Blob([rinexContent], { type: 'text/plain;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    
+    const suffix = version === '3.04' ? 'rnx' : (String(utc0.year % 100).padStart(2, '0') + 'o');
+    const baseName = gPrimaryName ? gPrimaryName.split('.')[0] : 'rtcm_qc_obs';
+    link.setAttribute("download", `${baseName}.${suffix}`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// ==========================================================================
 // Main rendering
 // ==========================================================================
 let gPrimary = null, gEph = null, gStats = null;
@@ -2957,6 +3353,12 @@ function renderAll() {
     }
 
     document.getElementById('tabs-container').style.display = 'flex';
+    
+    // Show exports
+    const btnCsv = document.getElementById('btn-csv-export');
+    if (btnCsv && gStats && gStats.rxXYZ) btnCsv.style.display = 'inline-block';
+    const rinexContainer = document.getElementById('rinex-container');
+    if (rinexContainer) rinexContainer.style.display = 'flex';
 
     renderOverview(gPrimary, gStats, gEph);
     if (currentTab !== 'overview') {

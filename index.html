@@ -1079,9 +1079,9 @@ function parseRTCM(arrayBuffer, isEph = false) {
     const bytes = new Uint8Array(arrayBuffer);
     const N = bytes.length;
     
-    // Auto-detect GEODNET format containing signature "$GEOD," in the first 100 bytes
+    // Auto-detect GEODNET format containing signature "$GEOD," in the first 4096 bytes
     let isGeodnet = false;
-    const checkLen = Math.min(N, 100);
+    const checkLen = Math.min(N, 4096);
     for (let i = 0; i < checkLen - 5; i++) {
         if (bytes[i] === 0x24 && bytes[i+1] === 0x47 && bytes[i+2] === 0x45 && bytes[i+3] === 0x4F && bytes[i+4] === 0x44 && bytes[i+5] === 0x2C) {
             isGeodnet = true;
@@ -1163,6 +1163,14 @@ function parseRTCMStream(arrayBuffer, isEph = false) {
     const bytes = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
     const N = bytes.length;
 
+    // Resolve GPS reference week once
+    let refWeek = -1;
+    try {
+        const dateEl = document.getElementById('approx-date');
+        const dateStr = (dateEl && dateEl.value) || getSystemDateString();
+        refWeek = dateToGpsWeek(dateStr);
+    } catch(e) {}
+
     const result = {
         totalBytes: N,
         totalMsg: 0,
@@ -1238,9 +1246,6 @@ function parseRTCMStream(arrayBuffer, isEph = false) {
             const sys = EPH_TYPES[type].split('(')[0];
             if (!result.eph[sys]) result.eph[sys] = {};
             try {
-                const dateEl = document.getElementById('approx-date');
-                const dateStr = (dateEl && dateEl.value) || getSystemDateString();
-                const refWeek = dateToGpsWeek(dateStr);
                 const eph = decodeEphemerisData(frame, type, refWeek);
                 if (eph && eph.prn > 0) {
                     result.eph[sys][eph.prn] = (result.eph[sys][eph.prn] || 0) + 1;

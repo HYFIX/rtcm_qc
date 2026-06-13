@@ -180,6 +180,10 @@
             <label for="approx-date" style="font-weight: 600; font-size: 0.9rem;">Approx Date:</label>
             <input type="date" id="approx-date" style="padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.2); color: #fff; font-size: 0.9rem;" onchange="reparseAndRender()">
         </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="show-labels" style="width: 16px; height: 16px; cursor: pointer; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.2);" onchange="renderAll()">
+            <label for="show-labels" style="font-weight: 600; font-size: 0.9rem; cursor: pointer;">Show Sat Labels</label>
+        </div>
         <button id="btn-csv-export" class="action-btn" style="margin-left: auto; padding: 6px 16px; font-size: 0.9rem; background: #3b82f6; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; border: none; display: none;" onclick="exportCSV()">Export Skyplot Data (CSV)</button>
     </div>
 
@@ -2594,6 +2598,9 @@ function drawSkyplot(canvasId, records, maskAngle) {
     }
     
     // Draw endpoints and labels
+    const showLabelsEl = document.getElementById('show-labels');
+    const showLabels = showLabelsEl ? showLabelsEl.checked : false;
+
     for (const [key, track] of Object.entries(satTracks)) {
         const lastPt = track[track.length - 1];
         if (!lastPt || lastPt.el < 0) continue;
@@ -2615,21 +2622,23 @@ function drawSkyplot(canvasId, records, maskAngle) {
         ctx.arc(sx, sy, 4.5, 0, 2 * Math.PI);
         ctx.stroke();
         
-        // Label text with backing
-        const sys = lastPt.sys;
-        const prn = lastPt.prn;
-        const label = `${sys[0]}${String(prn).padStart(2,'0')}`;
-        
-        ctx.font = 'bold 9px monospace';
-        const tw = ctx.measureText(label).width;
-        
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-        ctx.fillRect(sx + 5, sy - 6, tw + 4, 12);
-        
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, sx + 7, sy);
+        if (showLabels) {
+            // Label text with backing
+            const sys = lastPt.sys;
+            const prn = lastPt.prn;
+            const label = `${sys[0]}${String(prn).padStart(2,'0')}`;
+            
+            ctx.font = 'bold 9px monospace';
+            const tw = ctx.measureText(label).width;
+            
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+            ctx.fillRect(sx + 5, sy - 6, tw + 4, 12);
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, sx + 7, sy);
+        }
     }
     
     // Draw the vertical color bar legend

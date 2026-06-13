@@ -12,10 +12,11 @@ A self-contained, client-side HTML tool for visualizing quality metrics from GNS
 | **Timeline** | Epoch interval distribution, data-rate heat map, gap annotations |
 | **Multipath/MW** | Bar charts of MP1/MP2 RMS and Melbourne–Wübbena std dev by satellite |
 | **Messages** | Raw message-type breakdown across all RTCM3 message types in the file |
+| **Skyplot & Visibility** | Polar skyplot with color-coded trajectories, expected vs tracked satellites line chart, elevation mask & date settings, CSV data export |
 
 ## Usage
 
-1. Open `rtcm_qc_viewer.html` in any modern browser (Chrome, Firefox, Edge).
+1. Open `index.html` in any modern browser (Chrome, Firefox, Edge).
 2. Drag and drop an RTCM3 binary log file onto the drop zone.
 3. The file is parsed entirely in the browser — no data leaves your machine.
 
@@ -47,6 +48,15 @@ LW  = (L1·f1 - L2·f2) / (f1 - f2)              [metres]
 PN  = (P1·f1 + P2·f2) / (f1 + f2)              [metres]
 MW  = (LW - PN) / lambda_WL                      [cycles]
 ```
+
+### Skyplot & Orbit Calculations
+- **Satellite Position Propagation**: Orbits are computed from broadcast ephemeris parameters using standard Keplerian formulas (for GPS, Galileo, BeiDou, QZSS, and IRNSS) and a Runge-Kutta 4th-order numerical integration solver (for GLONASS).
+- **Receiver Coordinates**: Derived from the average of decoded RTCM 1005/1006 Antenna Reference Point (ARP) messages (38-bit signed integer values decoded using floating-point math).
+- **Azimuth & Elevation**: Coordinates are translated from ECEF to local ENU (East-North-Up) using the reference receiver geodetic position:
+  ```
+  [azimuth, elevation] = enu2azel(ecef2enu(rxXYZ, satXYZ))
+  ```
+- **Dynamic Re-parsing**: If the approximate date is manually modified in the UI, the page automatically re-parses the raw binary file buffers to recalculate the GPS reference week number and update the decoded orbit coordinates from scratch.
 
 ## Dependencies
 

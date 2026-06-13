@@ -70,6 +70,17 @@
         }
         .tab-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
         .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: var(--text); }
+        .action-btn {
+            font-family: 'Inter', sans-serif;
+            transition: all 0.2s ease;
+        }
+        .action-btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+        .action-btn:active {
+            transform: translateY(0);
+        }
         .tab-content { display: none; flex-direction: column; gap: 20px; }
         .tab-content.active { display: flex; }
 
@@ -158,6 +169,20 @@
         </div>
     </div>
 
+    <!-- Settings Bar -->
+    <div class="card" style="margin-top: 16px; padding: 12px 20px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <label for="el-mask" style="font-weight: 600; font-size: 0.9rem;">Elevation Mask:</label>
+            <input type="number" id="el-mask" value="10" min="0" max="90" style="width: 60px; padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.2); color: #fff; font-size: 0.9rem;" onchange="renderAll()">
+            <span style="font-size: 0.9rem; color: var(--muted);">degrees</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <label for="approx-date" style="font-weight: 600; font-size: 0.9rem;">Approx Date:</label>
+            <input type="date" id="approx-date" style="padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.2); color: #fff; font-size: 0.9rem;" onchange="reparseAndRender()">
+        </div>
+        <button id="btn-csv-export" class="action-btn" style="margin-left: auto; padding: 6px 16px; font-size: 0.9rem; background: #3b82f6; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; border: none; display: none;" onclick="exportCSV()">Export Skyplot Data (CSV)</button>
+    </div>
+
     <!-- Tabs -->
     <div id="tabs-container" class="tabs">
         <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
@@ -166,6 +191,7 @@
         <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
         <button class="tab-btn" onclick="switchTab('multipath')">Multipath &amp; MW</button>
         <button class="tab-btn" onclick="switchTab('messages')">Messages</button>
+        <button class="tab-btn" onclick="switchTab('skyplot')">Skyplot &amp; Visibility</button>
     </div>
 
     <!-- ============ OVERVIEW ============ -->
@@ -314,6 +340,24 @@
         </div>
     </div>
 
+    <!-- ============ SKYPLOT & VISIBILITY ============ -->
+    <div id="tab-skyplot" class="tab-content">
+        <div class="stat-grid" id="stat-skyplot"></div>
+        <div class="layout-2">
+            <div class="card" style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                <h3>Skyplot (SNR of First Frequency)</h3>
+                <div style="width: 100%; max-width: 450px; aspect-ratio: 1; margin: 16px 0;">
+                    <canvas id="skyplot-canvas" width="450" height="450" style="width: 100%; height: 100%;"></canvas>
+                </div>
+                <div id="skyplot-legend" style="display: flex; gap: 12px; font-size: 0.8rem; margin-top: 8px; flex-wrap: wrap; justify-content: center;"></div>
+            </div>
+            <div class="card">
+                <h3>Observed vs Expected Satellites</h3>
+                <div class="chart-wrap h400"><canvas id="chart-visibility"></canvas></div>
+            </div>
+        </div>
+    </div>
+
     <footer>GNSS RTCM QC Viewer &copy; 2026 · Client-side binary RTCM3 processor · No data leaves your browser</footer>
 </div>
 
@@ -347,8 +391,439 @@ function getu(b, pos, len) {
 }
 function gets(b, pos, len) {
     let v = getu(b, pos, len);
-    if (len > 0 && (v & (1 << (len - 1)))) v -= (1 << len);
+    if (len <= 0) return 0;
+    if (len === 32) return v | 0;
+    const limit = Math.pow(2, len - 1);
+    if (v >= limit) {
+        v -= Math.pow(2, len);
+    }
     return v;
+}
+function getbitg(b, pos, len) {
+    const sign = getu(b, pos, 1);
+    const val = getu(b, pos + 1, len - 1);
+    return sign ? -val : val;
+}
+
+// ==========================================================================
+// Date and Time Helpers
+// ==========================================================================
+function getSystemDateString() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const r = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${r}`;
+}
+
+function extractDateFromFilename(filename) {
+    if (!filename) return null;
+    let m = filename.match(/\b(20\d{2})[-_](0[1-9]|1[0-2])[-_](0[1-9]|[12]\d|3[01])\b/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = filename.match(/\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = filename.match(/(?:^|[^0-9])(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:$|[^0-9])/);
+    if (m) {
+        const year = parseInt(m[1]) + 2000;
+        return `${year}-${m[2]}-${m[3]}`;
+    }
+    return null;
+}
+
+function dateToGpsTime(dateStr) {
+    if (!dateStr) return { week: -1, tow: 0 };
+    const gpsEpoch = new Date(Date.UTC(1980, 0, 6, 0, 0, 0));
+    const parts = dateStr.split('-');
+    const year = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1;
+    const day = parseInt(parts[2]);
+    const targetDate = new Date(Date.UTC(year, month, day, 0, 0, 0));
+    const diffMs = targetDate.getTime() - gpsEpoch.getTime();
+    const totalSec = Math.floor(diffMs / 1000);
+    const week = Math.floor(totalSec / 604800);
+    const tow = totalSec % 604800;
+    return { week, tow };
+}
+
+function dateToGpsWeek(dateStr) {
+    return dateToGpsTime(dateStr).week;
+}
+
+// ==========================================================================
+// Ephemeris Decoders
+// ==========================================================================
+function decodeEphemerisData(b, type, refWeek) {
+    let i = 36;
+    if (type === 1019) { // GPS
+        const prn = getu(b, i, 6); i += 6;
+        let week10 = getu(b, i, 10); i += 10;
+        const sva = getu(b, i, 4); i += 4;
+        const code = getu(b, i, 2); i += 2;
+        const idot = gets(b, i, 14) * Math.pow(2, -43) * Math.PI; i += 14;
+        const iode = getu(b, i, 8); i += 8;
+        const toc = getu(b, i, 16) * 16.0; i += 16;
+        const f2 = gets(b, i, 8) * Math.pow(2, -55); i += 8;
+        const f1 = gets(b, i, 16) * Math.pow(2, -43); i += 16;
+        const f0 = gets(b, i, 22) * Math.pow(2, -31); i += 22;
+        const iodc = getu(b, i, 10); i += 10;
+        const crs = gets(b, i, 16) * Math.pow(2, -5); i += 16;
+        const deln = gets(b, i, 16) * Math.pow(2, -43) * Math.PI; i += 16;
+        const M0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cuc = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const e = getu(b, i, 32) * Math.pow(2, -33); i += 32;
+        const cus = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const sqrtA = getu(b, i, 32) * Math.pow(2, -19); i += 32;
+        const toes = getu(b, i, 16) * 16.0; i += 16;
+        const cic = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const OMG0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cis = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const i0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const crc = gets(b, i, 16) * Math.pow(2, -5); i += 16;
+        const omg = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const OMGd = gets(b, i, 24) * Math.pow(2, -43) * Math.PI; i += 24;
+        
+        let week = week10;
+        if (refWeek >= 0) {
+            const k = Math.round((refWeek - week10) / 1024);
+            week += k * 1024;
+        }
+        return { sys: 'GPS', prn, week, toes, A: sqrtA * sqrtA, e, i0, OMG0, omg, M0, deln, OMGd, idot, cuc, cus, cic, cis, crc, crs };
+    }
+    else if (type === 1020) { // GLO
+        const prn = getu(b, i, 6); i += 6;
+        const frq = getu(b, i, 5) - 7; i += 5 + 2 + 2;
+        const tk_h = getu(b, i, 5); i += 5;
+        const tk_m = getu(b, i, 6); i += 6;
+        const tk_s = getu(b, i, 1) * 30.0; i += 1;
+        const bn = getu(b, i, 1); i += 1 + 1;
+        const tb = getu(b, i, 7); i += 7;
+        const velX = getbitg(b, i, 24) * Math.pow(2, -20) * 1e3; i += 24;
+        const posX = getbitg(b, i, 27) * Math.pow(2, -11) * 1e3; i += 27;
+        const accX = getbitg(b, i, 5) * Math.pow(2, -30) * 1e3; i += 5;
+        const velY = getbitg(b, i, 24) * Math.pow(2, -20) * 1e3; i += 24;
+        const posY = getbitg(b, i, 27) * Math.pow(2, -11) * 1e3; i += 27;
+        const accY = getbitg(b, i, 5) * Math.pow(2, -30) * 1e3; i += 5;
+        const velZ = getbitg(b, i, 24) * Math.pow(2, -20) * 1e3; i += 24;
+        const posZ = getbitg(b, i, 27) * Math.pow(2, -11) * 1e3; i += 27;
+        const accZ = getbitg(b, i, 5) * Math.pow(2, -30) * 1e3; i += 5 + 1;
+        const gamn = getbitg(b, i, 11) * Math.pow(2, -40); i += 11 + 3;
+        const taun = getbitg(b, i, 22) * Math.pow(2, -30); i += 22;
+        const dtaun = getbitg(b, i, 5) * Math.pow(2, -30); i += 5;
+        
+        return { sys: 'GLO', prn, frq, tb, pos: [posX, posY, posZ], vel: [velX, velY, velZ], acc: [accX, accY, accZ], gamn, taun, dtaun };
+    }
+    else if (type === 1045 || type === 1046) { // GAL
+        const prn = getu(b, i, 6); i += 6;
+        const week = getu(b, i, 12); i += 12;
+        const iode = getu(b, i, 10); i += 10;
+        const sva = getu(b, i, 8); i += 8;
+        const idot = gets(b, i, 14) * Math.pow(2, -43) * Math.PI; i += 14;
+        const toc = getu(b, i, 14) * 60.0; i += 14;
+        const f2 = gets(b, i, 6) * Math.pow(2, -59); i += 6;
+        const f1 = gets(b, i, 21) * Math.pow(2, -46); i += 21;
+        const f0 = gets(b, i, 31) * Math.pow(2, -34); i += 31;
+        const crs = gets(b, i, 16) * Math.pow(2, -5); i += 16;
+        const deln = gets(b, i, 16) * Math.pow(2, -43) * Math.PI; i += 16;
+        const M0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cuc = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const e = getu(b, i, 32) * Math.pow(2, -33); i += 32;
+        const cus = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const sqrtA = getu(b, i, 32) * Math.pow(2, -19); i += 32;
+        const toes = getu(b, i, 14) * 60.0; i += 14;
+        const cic = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const OMG0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cis = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const i0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const crc = gets(b, i, 16) * Math.pow(2, -5); i += 16;
+        const omg = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const OMGd = gets(b, i, 24) * Math.pow(2, -43) * Math.PI; i += 24;
+        return { sys: 'GAL', prn, week: week + 1024, toes, A: sqrtA * sqrtA, e, i0, OMG0, omg, M0, deln, OMGd, idot, cuc, cus, cic, cis, crc, crs };
+    }
+    else if (type === 1042) { // BDS
+        const prn = getu(b, i, 6); i += 6;
+        const week = getu(b, i, 13); i += 13;
+        const sva = getu(b, i, 4); i += 4;
+        const idot = gets(b, i, 14) * Math.pow(2, -43) * Math.PI; i += 14;
+        const iode = getu(b, i, 5); i += 5;
+        const toc = getu(b, i, 17) * 8.0; i += 17;
+        const f2 = gets(b, i, 11) * Math.pow(2, -66); i += 11;
+        const f1 = gets(b, i, 22) * Math.pow(2, -50); i += 22;
+        const f0 = gets(b, i, 24) * Math.pow(2, -33); i += 24;
+        const iodc = getu(b, i, 5); i += 5;
+        const crs = gets(b, i, 18) * Math.pow(2, -6); i += 18;
+        const deln = gets(b, i, 16) * Math.pow(2, -43) * Math.PI; i += 16;
+        const M0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cuc = gets(b, i, 18) * Math.pow(2, -31); i += 18;
+        const e = getu(b, i, 32) * Math.pow(2, -33); i += 32;
+        const cus = gets(b, i, 18) * Math.pow(2, -31); i += 18;
+        const sqrtA = getu(b, i, 32) * Math.pow(2, -19); i += 32;
+        const toes = getu(b, i, 17) * 8.0; i += 17;
+        const cic = gets(b, i, 18) * Math.pow(2, -31); i += 18;
+        const OMG0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cis = gets(b, i, 18) * Math.pow(2, -31); i += 18;
+        const i0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const crc = gets(b, i, 18) * Math.pow(2, -6); i += 18;
+        const omg = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const OMGd = gets(b, i, 24) * Math.pow(2, -43) * Math.PI; i += 24;
+        return { sys: 'BDS', prn, week, toes, A: sqrtA * sqrtA, e, i0, OMG0, omg, M0, deln, OMGd, idot, cuc, cus, cic, cis, crc, crs };
+    }
+    else if (type === 1044) { // QZS
+        const prn = getu(b, i, 4) + 192; i += 4;
+        const toc = getu(b, i, 16) * 16.0; i += 16;
+        const f2 = gets(b, i, 8) * Math.pow(2, -55); i += 8;
+        const f1 = gets(b, i, 16) * Math.pow(2, -43); i += 16;
+        const f0 = gets(b, i, 22) * Math.pow(2, -31); i += 22;
+        const iode = getu(b, i, 8); i += 8;
+        const crs = gets(b, i, 16) * Math.pow(2, -5); i += 16;
+        const deln = gets(b, i, 16) * Math.pow(2, -43) * Math.PI; i += 16;
+        const M0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cuc = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const e = getu(b, i, 32) * Math.pow(2, -33); i += 32;
+        const cus = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const sqrtA = getu(b, i, 32) * Math.pow(2, -19); i += 32;
+        const toes = getu(b, i, 16) * 16.0; i += 16;
+        const cic = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const OMG0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const cis = gets(b, i, 16) * Math.pow(2, -29); i += 16;
+        const i0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const crc = gets(b, i, 16) * Math.pow(2, -5); i += 16;
+        const omg = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const OMGd = gets(b, i, 24) * Math.pow(2, -43) * Math.PI; i += 24;
+        const idot = gets(b, i, 14) * Math.pow(2, -43) * Math.PI; i += 14;
+        return { sys: 'QZS', prn, toes, A: sqrtA * sqrtA, e, i0, OMG0, omg, M0, deln, OMGd, idot, cuc, cus, cic, cis, crc, crs };
+    }
+    else if (type === 1041) { // IRN
+        const prn = getu(b, i, 6); i += 6;
+        let week10 = getu(b, i, 10); i += 10;
+        const f0 = gets(b, i, 22) * Math.pow(2, -31); i += 22;
+        const f1 = gets(b, i, 16) * Math.pow(2, -43); i += 16;
+        const f2 = gets(b, i, 8) * Math.pow(2, -55); i += 8;
+        const sva = getu(b, i, 4); i += 4;
+        const toc = getu(b, i, 16) * 16.0; i += 16;
+        const tgd0 = gets(b, i, 8) * Math.pow(2, -31); i += 8;
+        const deln = gets(b, i, 22) * Math.pow(2, -41) * Math.PI; i += 22;
+        const iode = getu(b, i, 8); i += 8 + 10;
+        const svh = getu(b, i, 2); i += 2;
+        const cuc = gets(b, i, 15) * Math.pow(2, -28); i += 15;
+        const cus = gets(b, i, 15) * Math.pow(2, -28); i += 15;
+        const cic = gets(b, i, 15) * Math.pow(2, -28); i += 15;
+        const cis = gets(b, i, 15) * Math.pow(2, -28); i += 15;
+        const crc = gets(b, i, 15) * 0.0625; i += 15;
+        const crs = gets(b, i, 15) * 0.0625; i += 15;
+        const idot = gets(b, i, 14) * Math.pow(2, -43) * Math.PI; i += 14;
+        const M0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const toes = getu(b, i, 16) * 16.0; i += 16;
+        const e = getu(b, i, 32) * Math.pow(2, -33); i += 32;
+        const sqrtA = getu(b, i, 32) * Math.pow(2, -19); i += 32;
+        const OMG0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const omg = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        const OMGd = gets(b, i, 22) * Math.pow(2, -41) * Math.PI; i += 22;
+        const i0 = gets(b, i, 32) * Math.pow(2, -31) * Math.PI; i += 32;
+        
+        let week = week10;
+        if (refWeek >= 0) {
+            const k = Math.round((refWeek - week10) / 1024);
+            week += k * 1024;
+        }
+        return { sys: 'IRN', prn, week, toes, A: sqrtA * sqrtA, e, i0, OMG0, omg, M0, deln, OMGd, idot, cuc, cus, cic, cis, crc, crs };
+    }
+    return null;
+}
+
+// ==========================================================================
+// Orbit Models and Coordinate Conversions (matching RTKLIB)
+// ==========================================================================
+const MU_GPS = 3.9860050e14;
+const MU_GLO = 3.9860044e14;
+const MU_GAL = 3.986004418e14;
+const MU_CMP = 3.986004418e14;
+
+const OMGE_GPS = 7.2921151467e-5;
+const OMGE_GLO = 7.292115e-5;
+const OMGE_GAL = 7.2921151467e-5;
+const OMGE_CMP = 7.292115e-5;
+
+const J2_GLO   = 1.0826257e-3;
+const RE_GLO   = 6378136.0;
+const TSTEP    = 60.0;
+
+const SIN_5 = -0.0871557427476582;
+const COS_5 = 0.9961946980917456;
+
+function dot(a, b) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+function deq(x, xdot, acc) {
+    const r2 = dot(x, x);
+    const r3 = r2 * Math.sqrt(r2);
+    if (r2 <= 0.0) {
+        for (let i = 0; i < 6; i++) xdot[i] = 0.0;
+        return;
+    }
+    const a = 1.5 * J2_GLO * MU_GLO * (RE_GLO * RE_GLO) / (r2 * r3);
+    const b = 5.0 * x[2] * x[2] / r2;
+    const c = -MU_GLO / r3 - a * (1.0 - b);
+    xdot[0] = x[3];
+    xdot[1] = x[4];
+    xdot[2] = x[5];
+    xdot[3] = (c + OMGE_GLO * OMGE_GLO) * x[0] + 2.0 * OMGE_GLO * x[4] + acc[0];
+    xdot[4] = (c + OMGE_GLO * OMGE_GLO) * x[1] - 2.0 * OMGE_GLO * x[3] + acc[1];
+    xdot[5] = (c - 2.0 * a) * x[2] + acc[2];
+}
+
+function glorbit(t, x, acc) {
+    const k1 = new Array(6), k2 = new Array(6), k3 = new Array(6), k4 = new Array(6);
+    const w = new Array(6);
+    
+    deq(x, k1, acc);
+    for (let i = 0; i < 6; i++) w[i] = x[i] + k1[i] * t / 2.0;
+    deq(w, k2, acc);
+    for (let i = 0; i < 6; i++) w[i] = x[i] + k2[i] * t / 2.0;
+    deq(w, k3, acc);
+    for (let i = 0; i < 6; i++) w[i] = x[i] + k3[i] * t;
+    deq(w, k4, acc);
+    
+    for (let i = 0; i < 6; i++) {
+        x[i] += (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) * t / 6.0;
+    }
+}
+
+function geph2pos(time, geph) {
+    let t = time - geph.toes;
+    const x = [
+        geph.pos[0], geph.pos[1], geph.pos[2],
+        geph.vel[0], geph.vel[1], geph.vel[2]
+    ];
+    let tt = t < 0.0 ? -TSTEP : TSTEP;
+    while (Math.abs(t) > 1e-9) {
+        if (Math.abs(t) < TSTEP) tt = t;
+        glorbit(tt, x, geph.acc);
+        t -= tt;
+    }
+    return [x[0], x[1], x[2]];
+}
+
+function eph2pos(tow, eph) {
+    if (eph.A <= 0.0) return [0, 0, 0];
+    
+    let tk = tow - eph.toes;
+    if (tk < -302400.0) tk += 604800.0;
+    else if (tk >= 302400.0) tk -= 604800.0;
+    
+    let mu, omge;
+    if (eph.sys === 'GAL') {
+        mu = MU_GAL;
+        omge = OMGE_GAL;
+    } else if (eph.sys === 'BDS') {
+        mu = MU_CMP;
+        omge = OMGE_CMP;
+    } else {
+        mu = MU_GPS;
+        omge = OMGE_GPS;
+    }
+    
+    const M = eph.M0 + (Math.sqrt(mu / (eph.A * eph.A * eph.A)) + eph.deln) * tk;
+    
+    let E = M;
+    let Ek = 0.0;
+    let n = 0;
+    const RTOL_KEPLER = 1e-13;
+    const MAX_ITER_KEPLER = 30;
+    
+    while (Math.abs(E - Ek) > RTOL_KEPLER && n < MAX_ITER_KEPLER) {
+        Ek = E;
+        E -= (E - eph.e * Math.sin(E) - M) / (1.0 - eph.e * Math.cos(E));
+        n++;
+    }
+    
+    const sinE = Math.sin(E);
+    const cosE = Math.cos(E);
+    
+    let u = Math.atan2(Math.sqrt(1.0 - eph.e * eph.e) * sinE, cosE - eph.e) + eph.omg;
+    let r = eph.A * (1.0 - eph.e * cosE);
+    let i = eph.i0 + eph.idot * tk;
+    
+    const sin2u = Math.sin(2.0 * u);
+    const cos2u = Math.cos(2.0 * u);
+    
+    u += eph.cus * sin2u + eph.cuc * cos2u;
+    r += eph.crs * sin2u + eph.crc * cos2u;
+    i += eph.cis * sin2u + eph.cic * cos2u;
+    
+    const x = r * Math.cos(u);
+    const y = r * Math.sin(u);
+    const cosi = Math.cos(i);
+    
+    let rs = [0, 0, 0];
+    if (eph.sys === 'BDS' && (eph.prn <= 5 || eph.prn >= 59)) {
+        const O = eph.OMG0 + eph.OMGd * tk - omge * eph.toes;
+        const sinO = Math.sin(O);
+        const cosO = Math.cos(O);
+        const xg = x * cosO - y * cosi * sinO;
+        const yg = x * sinO + y * cosi * cosO;
+        const zg = y * Math.sin(i);
+        const sino = Math.sin(omge * tk);
+        const coso = Math.cos(omge * tk);
+        
+        rs[0] = xg * coso + yg * sino * COS_5 + zg * sino * SIN_5;
+        rs[1] = -xg * sino + yg * coso * COS_5 + zg * coso * SIN_5;
+        rs[2] = -yg * SIN_5 + zg * COS_5;
+    } else {
+        const O = eph.OMG0 + (eph.OMGd - omge) * tk - omge * eph.toes;
+        const sinO = Math.sin(O);
+        const cosO = Math.cos(O);
+        
+        rs[0] = x * cosO - y * cosi * sinO;
+        rs[1] = x * sinO + y * cosi * cosO;
+        rs[2] = y * Math.sin(i);
+    }
+    return rs;
+}
+
+function computeSatPos(tow, eph) {
+    if (eph.sys === 'GLO') {
+        return geph2pos(tow, eph);
+    } else {
+        return eph2pos(tow, eph);
+    }
+}
+
+function ecef2enu(xyz_recv, xyz_sat) {
+    const lat_deg = ecef2llh(xyz_recv)[0];
+    const lon_deg = ecef2llh(xyz_recv)[1];
+    const lat = lat_deg * Math.PI / 180;
+    const lon = lon_deg * Math.PI / 180;
+    
+    const dx = xyz_sat[0] - xyz_recv[0];
+    const dy = xyz_sat[1] - xyz_recv[1];
+    const dz = xyz_sat[2] - xyz_recv[2];
+    
+    const sin_lat = Math.sin(lat);
+    const cos_lat = Math.cos(lat);
+    const sin_lon = Math.sin(lon);
+    const cos_lon = Math.cos(lon);
+    
+    const E = -sin_lon * dx + cos_lon * dy;
+    const N = -sin_lat * cos_lon * dx - sin_lat * sin_lon * dy + cos_lat * dz;
+    const U = cos_lat * cos_lon * dx + cos_lat * sin_lon * dy + sin_lat * dz;
+    
+    return [E, N, U];
+}
+
+function enu2azel(enu) {
+    const [E, N, U] = enu;
+    const d2 = E*E + N*N;
+    let az = 0.0;
+    let el = 0.0;
+    if (d2 > 1e-6) {
+        az = Math.atan2(E, N);
+        if (az < 0) az += 2 * Math.PI;
+        el = Math.atan(U / Math.sqrt(d2));
+    } else {
+        el = U > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+    return [az * 180 / Math.PI, el * 180 / Math.PI];
 }
 
 const CLIGHT = 299792458.0; // speed of light (m/s)
@@ -390,7 +865,7 @@ const SIG_NAMES = {
            22:'5D', 23:'5P', 24:'5X',
            25:'7D',
            30:'1D', 31:'1P', 32:'1X' },
-    IRN: { 23:'5A' }
+    IRN: { 22:'5A' }
 };
 
 const EPH_TYPES = { 1019:'GPS',1020:'GLO',1041:'IRN',1042:'BDS',1044:'QZS',1045:'GAL(FNAV)',1046:'GAL(INAV)' };
@@ -611,8 +1086,10 @@ function parseRTCM(arrayBuffer, isEph = false) {
         msgCount: {},
         epochs: [],           // { tow, sys, nSat, signals: [] }
         stationPos: null,
+        stationPositions: [], // all decoded 1005/1006 positions
         stationInfo: null,
         eph: {},              // { GPS: {prn: count}, GLO: {...}, ... }
+        ephData: {},          // key -> parsed ephemeris object
         gloFcn: {},           // GLO PRN → frequency channel number (from 1020)
         rawSignals: [],       // all decoded signal obs (thinned for memory)
         crcFailBytes: []
@@ -663,29 +1140,31 @@ function parseRTCM(arrayBuffer, isEph = false) {
 
         // Station info
         if (type === 1005 || type === 1006) {
-            try { result.stationPos = decode1005(frame); } catch(e) {}
+            try { 
+                const s = decode1005(frame); 
+                result.stationPos = s; 
+                result.stationPositions.push(s);
+            } catch(e) {}
         } else if (type === 1033) {
             try { result.stationInfo = decode1033(frame); } catch(e) {}
         }
 
-        // Ephemeris count
+        // Ephemeris count and full decode
         if (EPH_TYPES[type]) {
             const sys = EPH_TYPES[type].split('(')[0];
             if (!result.eph[sys]) result.eph[sys] = {};
-            // PRN is in next 6-10 bits after type (rough extraction)
             try {
-                let prn = 0;
-                if (type === 1019) { prn = getu(frame, 36, 6); } // GPS
-                else if (type === 1020) {
-                    prn = getu(frame, 36, 6); // GLO slot number
-                    const fcn = gets(frame, 42, 5); // DF040: FCN, signed 5-bit
-                    if (prn > 0 && fcn >= -7 && fcn <= 6) result.gloFcn[prn] = fcn;
+                const dateEl = document.getElementById('approx-date');
+                const dateStr = (dateEl && dateEl.value) || getSystemDateString();
+                const refWeek = dateToGpsWeek(dateStr);
+                const eph = decodeEphemerisData(frame, type, refWeek);
+                if (eph && eph.prn > 0) {
+                    result.eph[sys][eph.prn] = (result.eph[sys][eph.prn] || 0) + 1;
+                    result.ephData[`${sys}-${eph.prn}`] = eph;
+                    if (type === 1020 && eph.frq !== undefined) {
+                        result.gloFcn[eph.prn] = eph.frq;
+                    }
                 }
-                else if (type === 1042) { prn = getu(frame, 36, 6); } // BDS
-                else if (type === 1044) { prn = getu(frame, 36, 4); } // QZS
-                else if (type === 1045 || type === 1046) { prn = getu(frame, 36, 6); } // GAL
-                else if (type === 1041) { prn = getu(frame, 36, 6); } // IRN
-                if (prn > 0) result.eph[sys][prn] = (result.eph[sys][prn] || 0) + 1;
             } catch(e) {}
         }
 
@@ -947,11 +1426,17 @@ function computeStats(primary, eph) {
     const G1_SIGS = new Set(['1C','1P']);                         // GLO G1
     const E1_SIGS = new Set(['1C','1A','1B','1X','1Z']);          // GAL E1
     const B1_SIGS = new Set(['2I','2Q','2X','1D','1P','1X']);     // BDS B1I + B1C
+    const Q1_SIGS = new Set(['1C','1S','1L','1X']);               // QZS L1
+    const S1_SIGS = new Set(['1C']);                              // SBS L1
+    const I1_SIGS = new Set(['5A']);                              // IRN L5
     function isL1Sig(sys, sigName) {
         if (sys === 'GPS') return L1_SIGS.has(sigName);
         if (sys === 'GLO') return G1_SIGS.has(sigName);
         if (sys === 'GAL') return E1_SIGS.has(sigName);
         if (sys === 'BDS') return B1_SIGS.has(sigName);
+        if (sys === 'QZS') return Q1_SIGS.has(sigName);
+        if (sys === 'SBS') return S1_SIGS.has(sigName);
+        if (sys === 'IRN') return I1_SIGS.has(sigName);
         return false;
     }
     const SNR_THRESH = 32;
@@ -965,6 +1450,176 @@ function computeStats(primary, eph) {
         }
         const total = good.GPS.size + good.GLO.size + good.GAL.size + good.BDS.size;
         snrCounts.push({ tow: ep.tow, total, GPS: good.GPS.size, GLO: good.GLO.size, GAL: good.GAL.size, BDS: good.BDS.size });
+    }
+
+    // --- Average Receiver ECEF Position ---
+    let rxXYZ = null;
+    const allPos = [];
+    if (primary && primary.stationPositions) allPos.push(...primary.stationPositions);
+    if (eph && eph.stationPositions) allPos.push(...eph.stationPositions);
+    
+    if (allPos.length > 0) {
+        let sx = 0, sy = 0, sz = 0;
+        for (const p of allPos) {
+            sx += p.xyz[0];
+            sy += p.xyz[1];
+            sz += p.xyz[2];
+        }
+        rxXYZ = [sx / allPos.length, sy / allPos.length, sz / allPos.length];
+    } else if (primary && primary.stationPos) {
+        rxXYZ = primary.stationPos.xyz;
+    }
+
+    // --- Merged Ephemeris Database ---
+    const mergedEph = {};
+    if (eph && eph.ephData) {
+        for (const [k, v] of Object.entries(eph.ephData)) {
+            mergedEph[k] = v;
+        }
+    }
+    if (primary && primary.ephData) {
+        for (const [k, v] of Object.entries(primary.ephData)) {
+            mergedEph[k] = v;
+        }
+    }
+
+    // --- Get Elevation Mask Angle ---
+    let elMask = 10;
+    const elMaskEl = document.getElementById('el-mask');
+    if (elMaskEl) elMask = parseFloat(elMaskEl.value) || 0;
+
+    // --- Expected vs Tracked Calculations (for GPS, GLO, GAL, BDS) and Skyplot records ---
+    const skyplotRecords = [];
+    const epochVisibility = [];
+    const satSummary = {}; // key -> { sys, prn, sumAz, sumEl, sumSnr, count }
+
+    for (const ep of epochs) {
+        const tow = ep.tow;
+        let allExpectedCount = 0;
+        let trackedExpectedCount = 0;
+
+        const observedSatsInEpoch = new Set();
+        const firstFreqObs = [];
+
+        for (const sg of ep.signals) {
+            observedSatsInEpoch.add(`${sg.sys}-${sg.prn}`);
+            if (isL1Sig(sg.sys, sg.sigName) && sg.cnr > 0) {
+                firstFreqObs.push(sg);
+            }
+        }
+
+        if (rxXYZ) {
+            // A. All expected visible satellites (GPS, GLO, GAL, BDS)
+            for (const [key, ephItem] of Object.entries(mergedEph)) {
+                if (ephItem.sys !== 'GPS' && ephItem.sys !== 'GLO' && ephItem.sys !== 'GAL' && ephItem.sys !== 'BDS') {
+                    continue;
+                }
+                if (ephItem.sys === 'GLO') {
+                    let toe_utc = ephItem.tb * 900.0 - 10800.0;
+                    let tod = tow % 86400.0;
+                    let diff = toe_utc - tod;
+                    if (diff < -43200.0) toe_utc += 86400.0;
+                    else if (diff > 43200.0) toe_utc -= 86400.0;
+                    ephItem.toes = (tow - tod) + toe_utc + 18.0;
+                }
+                try {
+                    const satXYZ = computeSatPos(tow, ephItem);
+                    if (satXYZ[0] !== 0 || satXYZ[1] !== 0 || satXYZ[2] !== 0) {
+                        const enu = ecef2enu(rxXYZ, satXYZ);
+                        const [az, el] = enu2azel(enu);
+                        if (el >= elMask) {
+                            allExpectedCount++;
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            // B. Tracked expected satellites (GPS, GLO, GAL, BDS)
+            for (const key of observedSatsInEpoch) {
+                const ephItem = mergedEph[key];
+                if (ephItem) {
+                    if (ephItem.sys !== 'GPS' && ephItem.sys !== 'GLO' && ephItem.sys !== 'GAL' && ephItem.sys !== 'BDS') {
+                        continue;
+                    }
+                    if (ephItem.sys === 'GLO') {
+                        let toe_utc = ephItem.tb * 900.0 - 10800.0;
+                        let tod = tow % 86400.0;
+                        let diff = toe_utc - tod;
+                        if (diff < -43200.0) toe_utc += 86400.0;
+                        else if (diff > 43200.0) toe_utc -= 86400.0;
+                        ephItem.toes = (tow - tod) + toe_utc + 18.0;
+                    }
+                    try {
+                        const satXYZ = computeSatPos(tow, ephItem);
+                        if (satXYZ[0] !== 0 || satXYZ[1] !== 0 || satXYZ[2] !== 0) {
+                            const enu = ecef2enu(rxXYZ, satXYZ);
+                            const [az, el] = enu2azel(enu);
+                            if (el >= elMask) {
+                                trackedExpectedCount++;
+                            }
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            // C. Match observed first-frequency signals for skyplot
+            for (const sg of firstFreqObs) {
+                const key = `${sg.sys}-${sg.prn}`;
+                const ephItem = mergedEph[key];
+                if (ephItem) {
+                    if (ephItem.sys === 'GLO') {
+                        let toe_utc = ephItem.tb * 900.0 - 10800.0;
+                        let tod = tow % 86400.0;
+                        let diff = toe_utc - tod;
+                        if (diff < -43200.0) toe_utc += 86400.0;
+                        else if (diff > 43200.0) toe_utc -= 86400.0;
+                        ephItem.toes = (tow - tod) + toe_utc + 18.0;
+                    }
+                    try {
+                        const satXYZ = computeSatPos(tow, ephItem);
+                        if (satXYZ[0] !== 0 || satXYZ[1] !== 0 || satXYZ[2] !== 0) {
+                            const enu = ecef2enu(rxXYZ, satXYZ);
+                            const [az, el] = enu2azel(enu);
+
+                            skyplotRecords.push({
+                                tow,
+                                sys: sg.sys,
+                                prn: sg.prn,
+                                pos: satXYZ,
+                                az,
+                                el,
+                                snr: sg.cnr
+                            });
+
+                            if (!satSummary[key]) {
+                                satSummary[key] = { sys: sg.sys, prn: sg.prn, sumAz: 0, sumEl: 0, sumSnr: 0, count: 0 };
+                            }
+                            satSummary[key].sumAz += az;
+                            satSummary[key].sumEl += el;
+                            satSummary[key].sumSnr += sg.cnr;
+                            satSummary[key].count++;
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+
+        epochVisibility.push({
+            tow,
+            trackedExpected: trackedExpectedCount,
+            allExpected: allExpectedCount
+        });
+    }
+
+    const skyplotSatData = [];
+    for (const [key, s] of Object.entries(satSummary)) {
+        skyplotSatData.push({
+            sys: s.sys,
+            prn: s.prn,
+            az: s.sumAz / s.count,
+            el: s.sumEl / s.count,
+            snr: s.sumSnr / s.count
+        });
     }
 
     return {
@@ -981,7 +1636,12 @@ function computeStats(primary, eph) {
         obsBySat,
         slipBySat,
         mpStats,
-        snrCounts
+        snrCounts,
+        rxXYZ,
+        mergedEph,
+        skyplotRecords,
+        skyplotSatData,
+        epochVisibility
     };
 }
 
@@ -1402,7 +2062,15 @@ function renderTimeline(primary, stats) {
 // ==========================================================================
 function renderMultipath(stats) {
     const mp = stats.mpStats;
-    const mpKeys = Object.keys(mp).sort();
+    const mpKeys = Object.keys(mp).sort((a, b) => {
+        const da = mp[a];
+        const db = mp[b];
+        if (da.sys !== db.sys) return da.sys.localeCompare(db.sys);
+        const pairA = `${da.sig1}-${da.sig2}`;
+        const pairB = `${db.sig1}-${db.sig2}`;
+        if (pairA !== pairB) return pairA.localeCompare(pairB);
+        return da.prn - db.prn;
+    });
 
     // For charts: pick best (highest-n) pair per satellite to avoid duplicate bars
     const bestPerSat = {};
@@ -1525,10 +2193,360 @@ function renderMessages(primary) {
 }
 
 // ==========================================================================
+// Skyplot & Visibility Rendering
+// ==========================================================================
+function getSnrColor(snr) {
+    const s = Math.max(20, Math.min(52, snr));
+    if (s <= 32) return 'rgb(239, 68, 68)';
+    if (s <= 36) {
+        const t = (s - 32) / 4;
+        const r = Math.round(239 + (234 - 239) * t);
+        const g = Math.round(68 + (179 - 68) * t);
+        const b = Math.round(68 + (8 - 68) * t);
+        return `rgb(${r},${g},${b})`;
+    }
+    if (s <= 40) {
+        const t = (s - 36) / 4;
+        const r = Math.round(234 + (16 - 234) * t);
+        const g = Math.round(179 + (185 - 179) * t);
+        const b = Math.round(8 + (129 - 8) * t);
+        return `rgb(${r},${g},${b})`;
+    }
+    if (s <= 44) {
+        const t = (s - 40) / 4;
+        const r = Math.round(16 + (6 - 16) * t);
+        const g = Math.round(185 + (182 - 185) * t);
+        const b = Math.round(129 + (212 - 129) * t);
+        return `rgb(${r},${g},${b})`;
+    }
+    if (s <= 48) {
+        const t = (s - 44) / 4;
+        const r = Math.round(6 + (59 - 6) * t);
+        const g = Math.round(182 + (130 - 182) * t);
+        const b = Math.round(212 + (246 - 212) * t);
+        return `rgb(${r},${g},${b})`;
+    }
+    {
+        const t = (s - 48) / 4;
+        const r = Math.round(59 + (29 - 59) * t);
+        const g = Math.round(130 + (78 - 130) * t);
+        const b = Math.round(246 + (216 - 246) * t);
+        return `rgb(${r},${g},${b})`;
+    }
+}
+
+function drawSkyplot(canvasId, records, maskAngle) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    
+    ctx.clearRect(0, 0, w, h);
+    
+    const cx = w / 2 - 25;
+    const cy = h / 2;
+    const R = w / 2 - 55; // 170
+    
+    // Draw grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    
+    // Concentric circles
+    const elevations = [0, 30, 60];
+    for (const el of elevations) {
+        const r = R * (90 - el) / 90;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+        ctx.stroke();
+        
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(`${el}°`, cx + 3, cy - r + 12);
+    }
+    
+    // Elevation mask circle (dashed)
+    if (maskAngle > 0 && maskAngle < 90) {
+        const rMask = R * (90 - maskAngle) / 90;
+        ctx.strokeStyle = 'rgba(239,68,68,0.5)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rMask, 0, 2 * Math.PI);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    
+    // Radial lines
+    const angles = [0, 90, 180, 270];
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    for (const angle of angles) {
+        const rad = angle * Math.PI / 180;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + R * Math.sin(rad), cy - R * Math.cos(rad));
+        ctx.stroke();
+    }
+    
+    // Labels
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', cx, cy - R - 12);
+    ctx.fillText('S', cx, cy + R + 12);
+    ctx.fillText('E', cx + R + 12, cy);
+    ctx.fillText('W', cx - R - 12, cy);
+    
+    // Group records by satellite (sys-prn)
+    const satTracks = {};
+    for (const r of records) {
+        const key = `${r.sys}-${r.prn}`;
+        if (!satTracks[key]) satTracks[key] = [];
+        satTracks[key].push(r);
+    }
+    
+    // Draw trajectories
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    for (const [key, track] of Object.entries(satTracks)) {
+        track.sort((a, b) => a.tow - b.tow);
+        
+        for (let i = 0; i < track.length - 1; i++) {
+            const p1 = track[i];
+            const p2 = track[i + 1];
+            if (p1.el < 0 || p2.el < 0) continue;
+            if (p2.tow - p1.tow > 60) continue; // Gap check
+            
+            const r1 = R * (90 - p1.el) / 90;
+            const radAz1 = p1.az * Math.PI / 180;
+            const sx1 = cx + r1 * Math.sin(radAz1);
+            const sy1 = cy - r1 * Math.cos(radAz1);
+            
+            const r2 = R * (90 - p2.el) / 90;
+            const radAz2 = p2.az * Math.PI / 180;
+            const sx2 = cx + r2 * Math.sin(radAz2);
+            const sy2 = cy - r2 * Math.cos(radAz2);
+            
+            ctx.strokeStyle = getSnrColor((p1.snr + p2.snr) / 2);
+            ctx.beginPath();
+            ctx.moveTo(sx1, sy1);
+            ctx.lineTo(sx2, sy2);
+            ctx.stroke();
+        }
+    }
+    
+    // Draw endpoints and labels
+    for (const [key, track] of Object.entries(satTracks)) {
+        const lastPt = track[track.length - 1];
+        if (!lastPt || lastPt.el < 0) continue;
+        
+        const r = R * (90 - lastPt.el) / 90;
+        const radAz = lastPt.az * Math.PI / 180;
+        const sx = cx + r * Math.sin(radAz);
+        const sy = cy - r * Math.cos(radAz);
+        
+        // Marker
+        ctx.fillStyle = getSnrColor(lastPt.snr);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4.5, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4.5, 0, 2 * Math.PI);
+        ctx.stroke();
+        
+        // Label text with backing
+        const sys = lastPt.sys;
+        const prn = lastPt.prn;
+        const label = `${sys[0]}${String(prn).padStart(2,'0')}`;
+        
+        ctx.font = 'bold 9px monospace';
+        const tw = ctx.measureText(label).width;
+        
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+        ctx.fillRect(sx + 5, sy - 6, tw + 4, 12);
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, sx + 7, sy);
+    }
+    
+    // Draw the vertical color bar legend
+    const barX = w - 55;
+    const barY = cy - R;
+    const barW = 15;
+    const barH = 2 * R;
+    
+    for (let dy = 0; dy < barH; dy++) {
+        const snrVal = 52 - (dy / barH) * (52 - 20);
+        ctx.fillStyle = getSnrColor(snrVal);
+        ctx.fillRect(barX, barY + dy, barW, 1);
+    }
+    
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+    
+    const ticks = [20, 24, 28, 32, 36, 40, 44, 48, 52];
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.fillStyle = '#fff';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    
+    for (const tick of ticks) {
+        const dy = barH * (52 - tick) / (52 - 20);
+        ctx.beginPath();
+        ctx.moveTo(barX + barW, barY + dy);
+        ctx.lineTo(barX + barW + 4, barY + dy);
+        ctx.stroke();
+        
+        ctx.fillText(`${tick}`, barX + barW + 8, barY + dy);
+    }
+    
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SNR', barX + barW/2, barY - 12);
+}
+
+function renderSkyplot(primary, stats) {
+    const elMask = parseFloat(document.getElementById('el-mask').value || '10');
+    
+    if (!stats.rxXYZ) {
+        document.getElementById('stat-skyplot').innerHTML = `
+            <div class="stat-card" style="grid-column: 1 / -1; border-left: 4px solid #ef4444;">
+                <div class="stat-title" style="color: #ef4444; font-weight: bold;">Error: Position Missing</div>
+                <div class="stat-value" style="font-size: 1.1rem; color: var(--muted); margin-top: 4px;">
+                    RTCM message 1005 or 1006 containing the station coordinates was not found. 
+                    Receiver position is required to compute satellite elevation, azimuth, and visibility.
+                </div>
+            </div>
+        `;
+        const canvas = document.getElementById('skyplot-canvas');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#ef4444';
+            ctx.font = '14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Receiver Position (1005/1006) Missing', canvas.width / 2, canvas.height / 2);
+        }
+        destroyChart('chart-visibility');
+        const btn = document.getElementById('btn-csv-export');
+        if (btn) btn.style.display = 'none';
+        return;
+    }
+    
+    const btn = document.getElementById('btn-csv-export');
+    if (btn) btn.style.display = 'inline-block';
+    
+    const epochVisibility = stats.epochVisibility || [];
+    const avgObs = epochVisibility.length ? epochVisibility.reduce((a,b)=>a+b.trackedExpected,0)/epochVisibility.length : 0;
+    const avgExp = epochVisibility.length ? epochVisibility.reduce((a,b)=>a+b.allExpected,0)/epochVisibility.length : 0;
+    
+    document.getElementById('stat-skyplot').innerHTML = `
+        <div class="stat-card"><div class="stat-title">Avg Tracked Expected Sats</div><div class="stat-value info">${avgObs.toFixed(1)}</div></div>
+        <div class="stat-card"><div class="stat-title">Avg All Expected Sats (>${elMask}°)</div><div class="stat-value warning">${avgExp.toFixed(1)}</div></div>
+        <div class="stat-card"><div class="stat-title">Ephemerides Loaded</div><div class="stat-value good">${Object.keys(stats.mergedEph || {}).length}</div></div>
+    `;
+    
+    drawSkyplot('skyplot-canvas', stats.skyplotRecords || [], elMask);
+    
+    document.getElementById('skyplot-legend').innerHTML = `
+        <div style="color:var(--muted);text-align:center;">Paths show satellite trajectories color-coded by SNR. Current/last position is marked with a circle and label.</div>
+    `;
+    
+    makeChart('chart-visibility', {
+        type: 'line',
+        data: {
+            labels: epochVisibility.map(ev => formatTOW(ev.tow)),
+            datasets: [
+                {
+                    label: 'Tracked Expected Satellites (GPS+GLO+GAL+BDS)',
+                    data: epochVisibility.map(ev => ev.trackedExpected),
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59,130,246,0.05)',
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: epochVisibility.length > 150 ? 0 : 2
+                },
+                {
+                    label: 'All Expected Satellites (GPS+GLO+GAL+BDS)',
+                    data: epochVisibility.map(ev => ev.allExpected),
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'rgba(245,158,11,0.05)',
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: epochVisibility.length > 150 ? 0 : 2
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: darkPlugins,
+            scales: darkScales('Time of Week (TOW)', 'Satellite Count')
+        }
+    });
+}
+
+function exportCSV() {
+    if (!gStats || !gStats.skyplotRecords || gStats.skyplotRecords.length === 0) {
+        alert("No skyplot data available to export. Ensure you have loaded a primary RTCM file with 1005/1006 position messages and matching ephemeris messages.");
+        return;
+    }
+    
+    let csv = "epoch_tow,satellite_id,pos_x,pos_y,pos_z,elevation_deg,azimuth_deg,snr_dbhz\n";
+    for (const r of gStats.skyplotRecords) {
+        const satId = `${r.sys[0]}${String(r.prn).padStart(2,'0')}`;
+        csv += `${r.tow.toFixed(3)},${satId},${r.pos[0].toFixed(4)},${r.pos[1].toFixed(4)},${r.pos[2].toFixed(4)},${r.el.toFixed(4)},${r.az.toFixed(4)},${r.snr.toFixed(1)}\n`;
+    }
+    
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", "rtcm_qc_skyplot_data.csv");
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// ==========================================================================
 // Main rendering
 // ==========================================================================
 let gPrimary = null, gEph = null, gStats = null;
+let gPrimaryBuffer = null, gEphBuffer = null;
+let gPrimaryName = '', gEphName = '';
 let currentTab = 'overview';
+
+function parseFile(buffer, isEph, fileName, fnameId) {
+    let result;
+    try {
+        result = parseRTCM(buffer, isEph);
+    } catch(err) {
+        document.getElementById(fnameId).textContent = '❌ Parse error: ' + err.message;
+        return null;
+    }
+    document.getElementById(fnameId).textContent = `✓ ${fileName} — ${result.totalMsg} msgs, ${result.epochs.length} obs epochs`;
+    document.getElementById(isEph ? 'drop-eph' : 'drop-primary').classList.add('loaded');
+    return result;
+}
+
+function reparseAndRender() {
+    if (gPrimaryBuffer) {
+        gPrimary = parseFile(gPrimaryBuffer, false, gPrimaryName, 'primary-fname');
+    }
+    if (gEphBuffer) {
+        gEph = parseFile(gEphBuffer, true, gEphName, 'eph-fname');
+    }
+    renderAll();
+}
 
 function renderAll() {
     if (!gPrimary) return;
@@ -1549,15 +2567,16 @@ function renderTabContent(tab) {
         case 'timeline':   renderTimeline(gPrimary, gStats); break;
         case 'multipath':  renderMultipath(gStats); break;
         case 'messages':   renderMessages(gPrimary); break;
+        case 'skyplot':    renderSkyplot(gPrimary, gStats); break;
     }
 }
 
 function switchTab(tab) {
     currentTab = tab;
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('#tabs-container .tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    const idx = ['overview','signals','satellites','timeline','multipath','messages'].indexOf(tab);
-    document.querySelectorAll('.tab-btn')[idx]?.classList.add('active');
+    const idx = ['overview','signals','satellites','timeline','multipath','messages','skyplot'].indexOf(tab);
+    document.querySelectorAll('#tabs-container .tab-btn')[idx]?.classList.add('active');
     document.getElementById('tab-' + tab)?.classList.add('active');
     if (tab !== 'overview') renderTabContent(tab);
 }
@@ -1575,7 +2594,7 @@ function setupDrop(zoneId, fnameId, isEph) {
     });
     zone.addEventListener('click', () => {
         const inp = document.createElement('input');
-        inp.type = 'file'; inp.accept = '.rtcm,.bin,.raw,.ubx,*';
+        inp.type = 'file'; inp.accept = '.rtcm,.bin,.raw,.ubx,.log,*';
         inp.onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0], fnameId, isEph); };
         inp.click();
     });
@@ -1583,20 +2602,21 @@ function setupDrop(zoneId, fnameId, isEph) {
 
 function loadFile(file, fnameId, isEph) {
     document.getElementById(fnameId).textContent = `⏳ Parsing ${file.name} (${formatBytes(file.size)})…`;
+    const dateStr = extractDateFromFilename(file.name);
+    if (dateStr) {
+        const dateEl = document.getElementById('approx-date');
+        if (dateEl) dateEl.value = dateStr;
+    }
     const reader = new FileReader();
     reader.onload = e => {
-        let result;
-        try { result = parseRTCM(e.target.result, isEph); } catch(err) {
-            document.getElementById(fnameId).textContent = '❌ Parse error: ' + err.message;
-            return;
+        if (isEph) {
+            gEphBuffer = e.target.result;
+            gEphName = file.name;
+        } else {
+            gPrimaryBuffer = e.target.result;
+            gPrimaryName = file.name;
         }
-        document.getElementById(fnameId).textContent = `✓ ${file.name} — ${result.totalMsg} msgs, ${result.epochs.length} obs epochs`;
-        document.getElementById(isEph ? 'drop-eph' : 'drop-primary').classList.add('loaded');
-
-        if (isEph) { gEph = result; }
-        else { gPrimary = result; }
-
-        renderAll();
+        reparseAndRender();
         switchTab('overview');
     };
     reader.readAsArrayBuffer(file);
@@ -1604,6 +2624,7 @@ function loadFile(file, fnameId, isEph) {
 
 setupDrop('drop-primary', 'primary-fname', false);
 setupDrop('drop-eph', 'eph-fname', true);
+document.getElementById('approx-date').value = getSystemDateString();
 </script>
 </body>
 </html>

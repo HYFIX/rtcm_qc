@@ -1086,12 +1086,11 @@ function decode1033(b) {
     let i = 24;
     i += 12; // skip DF002 message number
     const staid = getu(b, i, 12); i += 12; // DF003: station ID
-    // Descriptor strings
     const readStr = (bits) => {
         const n = getu(b, i, bits); i += bits;
         let s = '';
         for (let k = 0; k < n; k++) { s += String.fromCharCode(getu(b, i, 8)); i += 8; }
-        return s;
+        return s.replace(/\0/g, '').trim();
     };
     const antDes = readStr(8);
     const setup  = getu(b, i, 8); i += 8;
@@ -1128,11 +1127,13 @@ function parseRTCM(arrayBuffer, isEph = false) {
     const bytes = new Uint8Array(arrayBuffer);
     const N = bytes.length;
     
-    // Auto-detect GEODNET format containing signature "$GEOD," in the first 4096 bytes
+    // Auto-detect GEODNET / BASE format containing signature "$GEOD," or "$BASE," in the first 4096 bytes
     let isGeodnet = false;
     const checkLen = Math.min(N, 4096);
     for (let i = 0; i < checkLen - 5; i++) {
-        if (bytes[i] === 0x24 && bytes[i+1] === 0x47 && bytes[i+2] === 0x45 && bytes[i+3] === 0x4F && bytes[i+4] === 0x44 && bytes[i+5] === 0x2C) {
+        if (bytes[i] === 0x24 && 
+            ((bytes[i+1] === 0x47 && bytes[i+2] === 0x45 && bytes[i+3] === 0x4F && bytes[i+4] === 0x44 && bytes[i+5] === 0x2C) ||
+             (bytes[i+1] === 0x42 && bytes[i+2] === 0x41 && bytes[i+3] === 0x53 && bytes[i+4] === 0x45 && bytes[i+5] === 0x2C))) {
             isGeodnet = true;
             break;
         }
@@ -1148,7 +1149,15 @@ function parseRTCM(arrayBuffer, isEph = false) {
         const decoder = new TextDecoder('utf-8');
         
         while (idx < N - 6) {
-            if (bytes[idx] !== 0x24 || bytes[idx+1] !== 0x47 || bytes[idx+2] !== 0x45 || bytes[idx+3] !== 0x4F || bytes[idx+4] !== 0x44 || bytes[idx+5] !== 0x2C) {
+            let isPrefix = false;
+            if (bytes[idx] === 0x24) {
+                if (bytes[idx+1] === 0x47 && bytes[idx+2] === 0x45 && bytes[idx+3] === 0x4F && bytes[idx+4] === 0x44 && bytes[idx+5] === 0x2C) {
+                    isPrefix = true;
+                } else if (bytes[idx+1] === 0x42 && bytes[idx+2] === 0x41 && bytes[idx+3] === 0x53 && bytes[idx+4] === 0x45 && bytes[idx+5] === 0x2C) {
+                    isPrefix = true;
+                }
+            }
+            if (!isPrefix) {
                 idx++;
                 continue;
             }
@@ -2930,6 +2939,17 @@ function rinexLine(data, label) {
     return data.padEnd(60, ' ') + label.substring(0, 20).padEnd(20, ' ') + '\n';
 }
 
+function formatRinexTime(utc) {
+    const y = String(utc.year).padStart(6, ' ');
+    const m = String(utc.month).padStart(6, ' ');
+    const d = String(utc.day).padStart(6, ' ');
+    const h = String(utc.hour).padStart(6, ' ');
+    const min = String(utc.minute).padStart(6, ' ');
+    const sec = utc.second.toFixed(7).padStart(13, ' ');
+    const sys = '   GPS'.padStart(8, ' ');
+    return y + m + d + h + min + sec + sys;
+}
+
 function getSnrSsi(snr) {
     if (snr <= 0) return ' ';
     if (snr < 12.0) return '1';
@@ -3087,15 +3107,28 @@ function exportRinex() {
         const staName = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_STATION';
         header += rinexLine(staName.substring(0, 60).padEnd(60, ' '), 'MARKER NAME');
         header += rinexLine('0000'.padEnd(60, ' '), 'MARKER NUMBER');
-        header += rinexLine('QC_OBSERVER         QC_AGENCY                                   ', 'OBSERVER / AGENCY');
+        
+        const observer = 'QC_OBSERVER';
+        const agency = 'QC_AGENCY';
+        header += rinexLine(observer.substring(0, 20).padEnd(20, ' ') + agency.substring(0, 40).padEnd(40, ' '), 'OBSERVER / AGENCY');
         
         const recType = gPrimary.stationInfo ? gPrimary.stationInfo.recType : 'QC_RECEIVER';
         const recSno = gPrimary.stationInfo ? gPrimary.stationInfo.recSno : '000000';
-        header += rinexLine((recSno.padEnd(20, ' ') + recType.padEnd(20, ' ') + 'QC_VERS').padEnd(60, ' '), 'REC # / TYPE / VERS');
+        const recFw = gPrimary.stationInfo ? gPrimary.stationInfo.recFw : 'QC_VERS';
+        header += rinexLine(
+            recSno.substring(0, 20).padEnd(20, ' ') +
+            recType.substring(0, 20).padEnd(20, ' ') +
+            recFw.substring(0, 20).padEnd(20, ' '),
+            'REC # / TYPE / VERS'
+        );
         
         const antDes = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_ANTENNA';
         const antSno = gPrimary.stationInfo ? gPrimary.stationInfo.antSno : '000000';
-        header += rinexLine((antSno.padEnd(20, ' ') + antDes.padEnd(40, ' ')), 'ANT # / TYPE');
+        header += rinexLine(
+            antSno.substring(0, 20).padEnd(20, ' ') +
+            antDes.substring(0, 20).padEnd(20, ' '),
+            'ANT # / TYPE'
+        );
         
         header += rinexLine(`${rx.toFixed(4).padStart(14, ' ')}${ry.toFixed(4).padStart(14, ' ')}${rz.toFixed(4).padStart(14, ' ')}`, 'APPROX POSITION XYZ');
         header += rinexLine('        0.0000        0.0000        0.0000                  ', 'ANTENNA: DELTA H/E/N');
@@ -3126,8 +3159,8 @@ function exportRinex() {
         header += rinexLine(`${interval.toFixed(4).padStart(10, ' ')}`, 'INTERVAL');
         
         // Time of first / last obs
-        header += rinexLine(`  ${utc0.year}    ${utc0.month}    ${utc0.day}    ${utc0.hour}    ${utc0.minute}   ${utc0.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF FIRST OBS');
-        header += rinexLine(`  ${utc1.year}    ${utc1.month}    ${utc1.day}    ${utc1.hour}    ${utc1.minute}   ${utc1.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF LAST OBS');
+        header += rinexLine(formatRinexTime(utc0), 'TIME OF FIRST OBS');
+        header += rinexLine(formatRinexTime(utc1), 'TIME OF LAST OBS');
         header += rinexLine('', 'END OF HEADER');
         
         // Write RINEX body
@@ -3199,15 +3232,28 @@ function exportRinex() {
         const staName = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_STATION';
         header += rinexLine(staName.substring(0, 60).padEnd(60, ' '), 'MARKER NAME');
         header += rinexLine('0000'.padEnd(60, ' '), 'MARKER NUMBER');
-        header += rinexLine('QC_OBSERVER         QC_AGENCY                                   ', 'OBSERVER / AGENCY');
+        
+        const observer = 'QC_OBSERVER';
+        const agency = 'QC_AGENCY';
+        header += rinexLine(observer.substring(0, 20).padEnd(20, ' ') + agency.substring(0, 40).padEnd(40, ' '), 'OBSERVER / AGENCY');
         
         const recType = gPrimary.stationInfo ? gPrimary.stationInfo.recType : 'QC_RECEIVER';
         const recSno = gPrimary.stationInfo ? gPrimary.stationInfo.recSno : '000000';
-        header += rinexLine((recSno.padEnd(20, ' ') + recType.padEnd(20, ' ') + 'QC_VERS').padEnd(60, ' '), 'REC # / TYPE / VERS');
+        const recFw = gPrimary.stationInfo ? gPrimary.stationInfo.recFw : 'QC_VERS';
+        header += rinexLine(
+            recSno.substring(0, 20).padEnd(20, ' ') +
+            recType.substring(0, 20).padEnd(20, ' ') +
+            recFw.substring(0, 20).padEnd(20, ' '),
+            'REC # / TYPE / VERS'
+        );
         
         const antDes = gPrimary.stationInfo ? gPrimary.stationInfo.antDes : 'QC_ANTENNA';
         const antSno = gPrimary.stationInfo ? gPrimary.stationInfo.antSno : '000000';
-        header += rinexLine((antSno.padEnd(20, ' ') + antDes.padEnd(40, ' ')), 'ANT # / TYPE');
+        header += rinexLine(
+            antSno.substring(0, 20).padEnd(20, ' ') +
+            antDes.substring(0, 20).padEnd(20, ' '),
+            'ANT # / TYPE'
+        );
         
         header += rinexLine(`${rx.toFixed(4).padStart(14, ' ')}${ry.toFixed(4).padStart(14, ' ')}${rz.toFixed(4).padStart(14, ' ')}`, 'APPROX POSITION XYZ');
         header += rinexLine('        0.0000        0.0000        0.0000                  ', 'ANTENNA: DELTA H/E/N');
@@ -3254,8 +3300,8 @@ function exportRinex() {
         header += rinexLine(`${interval.toFixed(4).padStart(10, ' ')}`, 'INTERVAL');
         
         // Time of first / last obs
-        header += rinexLine(`  ${utc0.year}    ${utc0.month}    ${utc0.day}    ${utc0.hour}    ${utc0.minute}   ${utc0.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF FIRST OBS');
-        header += rinexLine(`  ${utc1.year}    ${utc1.month}    ${utc1.day}    ${utc1.hour}    ${utc1.minute}   ${utc1.second.toFixed(7).padStart(11, ' ')}     GPS`, 'TIME OF LAST OBS');
+        header += rinexLine(formatRinexTime(utc0), 'TIME OF FIRST OBS');
+        header += rinexLine(formatRinexTime(utc1), 'TIME OF LAST OBS');
         header += rinexLine('', 'END OF HEADER');
         
         // Write RINEX body

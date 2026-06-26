@@ -1254,10 +1254,12 @@ function parseRTCMStream(arrayBuffer, isEph = false, byteMap = null) {
     let curTow = -1;
     let curEpochSats = {}; // sys → Set of PRN
     let curEpochSigs = []; // signal obs for current epoch
+    let curEpochMsgCount = 0;    // MSM messages received this epoch
+    let curEpochComplete = false; // true when a sync=0 (last-message) flag is seen
 
     const flushEpoch = () => {
         if (curTow < 0) return;
-        const epoch = { tow: curTow, systems: {} };
+        const epoch = { tow: curTow, systems: {}, msgCount: curEpochMsgCount, complete: curEpochComplete };
         for (const [sys, prns] of Object.entries(curEpochSats)) {
             epoch.systems[sys] = [...prns];
         }
@@ -1268,6 +1270,8 @@ function parseRTCMStream(arrayBuffer, isEph = false, byteMap = null) {
         result.rawSignals.push(...thin);
         curEpochSats = {};
         curEpochSigs = [];
+        curEpochMsgCount = 0;
+        curEpochComplete = false;
         curTow = -1;
     };
 
@@ -1337,6 +1341,8 @@ function parseRTCMStream(arrayBuffer, isEph = false, byteMap = null) {
                     if (!curEpochSats[sys]) curEpochSats[sys] = new Set();
                     for (const prn of obs.satList) curEpochSats[sys].add(prn);
                     curEpochSigs.push(...obs.signals);
+                    curEpochMsgCount++;
+                    if (obs.sync === 0) curEpochComplete = true;
 
                     let msgArrivalMs = null;
                     if (byteMap) {
@@ -1406,6 +1412,18 @@ function computeStats(primary, eph) {
             gaps.push({ tow: epochs[i-1].tow, dt, missed: Math.round(dt / sampleInterval) - 1 });
         }
     }
+
+    // --- Sync / completeness stats ---
+    let completeEpochs = 0;
+    let totalMsmMsgs = 0;
+    let maxMsmPerEpoch = 0;
+    for (const ep of epochs) {
+        if (ep.complete) completeEpochs++;
+        totalMsmMsgs += ep.msgCount || 0;
+        if ((ep.msgCount || 0) > maxMsmPerEpoch) maxMsmPerEpoch = ep.msgCount;
+    }
+    const avgMsmPerEpoch = epochs.length > 0 ? totalMsmMsgs / epochs.length : 0;
+    const completeRate = epochs.length > 0 ? completeEpochs / epochs.length * 100 : 0;
 
     // --- System satellite counts ---
     const sysEpochCounts = {}; // sys → [count per epoch]
@@ -1909,6 +1927,10 @@ function computeStats(primary, eph) {
         t0, t1,
         gaps,
         intervals: intervalCounts,
+        completeEpochs,
+        completeRate,
+        avgMsmPerEpoch,
+        maxMsmPerEpoch,
         sysAvgSats,
         cnrBySys,
         cnrAvgBySat,
@@ -1974,6 +1996,7 @@ function renderOverview(primary, stats, ephResult) {
     const crcRate = primary.totalMsg > 0 ? primary.crcFail / (primary.totalMsg + primary.crcFail) * 100 : 0;
     const crcClass = crcRate < 0.1 ? 'good' : crcRate < 1 ? 'warn' : 'bad';
     const drClass = stats.dataRate > 98 ? 'good' : stats.dataRate > 90 ? 'warn' : 'bad';
+    const syncClass = stats.completeRate > 98 ? 'good' : stats.completeRate > 90 ? 'warn' : 'bad';
 
     document.getElementById('stat-overview').innerHTML = `
         <div class="stat-card"><div class="stat-title">File Size</div><div class="stat-value info">${formatBytes(primary.totalBytes)}</div></div>
@@ -1985,6 +2008,8 @@ function renderOverview(primary, stats, ephResult) {
         <div class="stat-card"><div class="stat-title">Start Time (TOW)</div><div class="stat-value info" style="font-size:1.2rem">${formatTOW(stats.t0)}</div></div>
         <div class="stat-card"><div class="stat-title">End Time (TOW)</div><div class="stat-value info" style="font-size:1.2rem">${formatTOW(stats.t1)}</div></div>
         <div class="stat-card"><div class="stat-title">Data Gaps</div><div class="stat-value ${stats.gaps.length > 0 ? 'warn' : 'good'}">${stats.gaps.length}</div></div>
+        <div class="stat-card"><div class="stat-title">Complete Epochs</div><div class="stat-value ${syncClass}">${stats.completeRate.toFixed(1)}%</div><div class="stat-sub">${stats.completeEpochs} / ${stats.nEpochs} with sync=0</div></div>
+        <div class="stat-card"><div class="stat-title">Avg MSM msgs/Epoch</div><div class="stat-value info">${stats.avgMsmPerEpoch.toFixed(1)}</div><div class="stat-sub">Max: ${stats.maxMsmPerEpoch}</div></div>
     `;
 
     // Message count chart

@@ -3073,7 +3073,7 @@ function exportRinex() {
         
     for (const ep of gPrimary.epochs) {
         for (const sg of ep.signals) {
-            if (sysSigs[sg.sys] !== undefined) {
+            if (sysSigs[sg.sys] !== undefined && /^\d[A-Z]$/.test(sg.sigName)) {
                 sysSigs[sg.sys].add(sg.sigName);
             }
         }

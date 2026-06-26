@@ -11,7 +11,7 @@ A self-contained, client-side HTML tool for visualizing quality metrics from GNS
 | **Satellites** | Per-satellite table: CNR, observation count, cycle slips, MP1/MP2 RMS, MW std dev |
 | **Timeline** | Epoch interval distribution, data-rate heat map, gap annotations |
 | **Multipath/MW** | Bar charts of MP1/MP2 RMS and Melbourne–Wübbena std dev by satellite |
-| **Messages** | Raw message-type breakdown across all RTCM3 message types in the file |
+| **Messages** | Raw message-type breakdown across all RTCM3 message types in the file, including proprietary types 4054 (GEODNET) and 4045 (XONA) |
 | **Skyplot & Visibility** | Polar skyplot with color-coded trajectories, expected vs tracked satellites line chart, elevation mask & date settings, CSV data export |
 | **Epoch Latency** | Statistical summary, charts, and detailed table for GEODNET packet arrival delays and sync durations |
 
@@ -64,6 +64,7 @@ MW  = (LW - PN) / lambda_WL                      [cycles]
   - **Standard-Compliant Headers**: Formats metadata headers (`OBSERVER / AGENCY`, `REC # / TYPE / VERS`, `ANT # / TYPE`, `TIME OF FIRST OBS`, `TIME OF LAST OBS`) strictly following standard column specifications and aligning labels to start exactly at column 61 (80-character limit). Strips null-padding bytes from decoded equipment strings.
   - **RINEX 3.04**: Exports GPS, GLONASS, Galileo, and BeiDou observations.
   - **RINEX 2.11**: Filters out unsupported constellations (BeiDou and QZSS), maps GPS/GLONASS P-code signals to `P1`/`P2`, maps Galileo signals to bands 1/5/6/7/8, and resolves signal collision/overwrite issues (e.g. `1C` and `1W` on L1) using dynamic prioritized band mapping.
+  - **Signal Validation**: Only signal names matching the RTCM3 two-character pattern (`\d[A-Z]`, e.g. `1C`, `2W`, `5I`) are included in the RINEX observation type headers and records; malformed codes are silently skipped.
 
 ## Dependencies
 
